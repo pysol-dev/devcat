@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const [captureDir, replayDir] = process.argv.slice(2);
@@ -16,6 +16,8 @@ for (const directory of [captureDir, replayDir]) {
   const wide = metadata.capture.widths.flat().filter(cell => cell.text === '界');
   // Then input editing, screen geometry, truecolor bytes, and teardown are preserved.
   assert.equal(metadata.error, null);
+  assert.equal(metadata.video.requested, false);
+  assert.equal((await readdir(directory)).some(name => name.endsWith('.webm')), false);
   assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
   assert.deepEqual(dimensions, [Math.ceil(metadata.capture.cssWidth * metadata.scale), Math.ceil(metadata.capture.cssHeight * metadata.scale)]);
   assert.equal(metadata.capture.lines.length, 10);

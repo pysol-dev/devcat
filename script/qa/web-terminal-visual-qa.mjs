@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
 import { createServer as createProbe } from 'node:net';
 import { once } from 'node:events';
 import { resolve } from 'node:path';
-import { parseArgs } from 'node:util';
+import { parseArgs, promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright-core';
 import pty from 'node-pty';
@@ -21,6 +23,7 @@ const { values } = parseArgs({ options: {
   'settle-ms': { type: 'string', default: '500' },
   'input-delay-ms': { type: 'string', default: '200' },
   'wait-for': { type: 'string' }, 'timeout-ms': { type: 'string', default: '15000' },
+  'record-video': { type: 'boolean', default: false },
   browser: { type: 'string' }, help: { type: 'boolean', default: false },
 } });
 if (values.help) {
@@ -28,6 +31,7 @@ if (values.help) {
   --title TEXT --evidence-dir DIR --cols 80 --rows 24 --font-size 16 --scale 2
   --input TEXT --input '{Enter}' --input '{Backspace}' --input '{ArrowDown}'
   --wait-for TEXT --timeout-ms 15000 --settle-ms 500 --input-delay-ms 200
+  --record-video (opt-in live WebM; requires Playwright ffmpeg and ffprobe)
   --browser /path/to/chrome (otherwise installed Google Chrome)
 Captures the active screen before terminating the PTY. --wait-for matches raw output.
 Keys: Enter, Backspace, Tab, Escape, arrows, Home, End, Delete, Ctrl+A..Z.
@@ -38,6 +42,7 @@ POSIX only. Run pnpm --dir script/qa install before use. Development tooling onl
 if (Boolean(values.command) === Boolean(values['from-file'])) {
   throw new TypeError('Specify exactly one of --command or --from-file');
 }
+if (values['from-file'] && values['record-video']) throw new TypeError('--record-video requires a live --command, not --from-file');
 if (values['from-file'] && values.input.length) throw new TypeError('Replay cannot accept --input');
 const numeric = (key, min, max) => {
   const value = Number(values[key]);
@@ -70,10 +75,11 @@ const metadata = {
   title: values.title, command: values.command ?? null, fromFile: values['from-file'] ?? null,
   cwd: process.cwd(), invocation: process.argv, cols, rows, fontSize, scale,
   startedAt: new Date().toISOString(), versions: { node: process.version },
+  video: { requested: values['record-video'], source: values['record-video'] ? 'live-pty-browser' : null },
   capture: null, cleanup: {}, error: null,
 };
 const raw = [];
-let browserServer, browser, terminal, server, port;
+let browserServer, browser, context, video, terminal, server, port;
 let exitObserved = false;
 let writeQueue = Promise.resolve();
 let renderError;
@@ -96,6 +102,7 @@ const alive = pid => {
   }
 };
 try {
+  if (values['record-video']) await promisify(execFile)('ffprobe', ['-version'], { timeout: 10000 });
   const js = await readFile(require.resolve('@xterm/xterm'));
   const css = await readFile(require.resolve('@xterm/xterm/css/xterm.css'));
   for (const name of ['@xterm/xterm', 'node-pty', 'playwright-core']) {
@@ -119,17 +126,31 @@ try {
   metadata.browserPid = browserServer.process().pid;
   browser = await chromium.connect(browserServer.wsEndpoint());
   metadata.versions.browser = browser.version();
-  const page = await browser.newPage({ viewport: { width: 1200, height: 800 }, deviceScaleFactor: scale });
-  await page.goto(`http://127.0.0.1:${port}`);
-  await page.exposeFunction('ptyInput', data => { if (terminal && !exitObserved) terminal.write(data); });
-  await page.evaluate(({ cols, rows, fontSize, title }) => {
-    document.title = title;
-    window.term = new Terminal({ cols, rows, fontSize, fontFamily: 'Menlo, "DejaVu Sans Mono", monospace',
-      cursorBlink: false, scrollback: 10000, theme: { background: '#101216', foreground: '#e8eaed' } });
-    window.term.open(document.querySelector('#terminal'));
-    window.term.onData(data => window.ptyInput(data));
-  }, { cols, rows, fontSize, title: values.title });
-  await page.evaluate(() => document.fonts.ready);
+  const openTerminal = async context => {
+    const page = await context.newPage();
+    await page.goto(`http://127.0.0.1:${port}`);
+    await page.exposeFunction('ptyInput', data => { if (terminal && !exitObserved) terminal.write(data); });
+    await page.evaluate(({ cols, rows, fontSize, title }) => {
+      document.title = title;
+      window.term = new Terminal({ cols, rows, fontSize, fontFamily: 'Menlo, "DejaVu Sans Mono", monospace',
+        cursorBlink: false, scrollback: 10000, theme: { background: '#101216', foreground: '#e8eaed' } });
+      window.term.open(document.querySelector('#terminal'));
+      window.term.onData(data => window.ptyInput(data));
+    }, { cols, rows, fontSize, title: values.title });
+    await page.evaluate(() => document.fonts.ready);
+    return page;
+  };
+  context = await browser.newContext({ viewport: { width: 1200, height: 800 }, deviceScaleFactor: scale });
+  let page = await openTerminal(context);
+  if (values['record-video']) {
+    const bounds = await page.locator('#terminal').boundingBox();
+    const viewport = { width: Math.ceil(bounds.width / 2) * 2, height: Math.ceil(bounds.height / 2) * 2 };
+    await context.close();
+    context = await browser.newContext({ viewport, deviceScaleFactor: scale,
+      recordVideo: { dir: evidenceDir, size: viewport } });
+    page = await openTerminal(context);
+    video = page.video();
+  }
   const write = bytes => page.evaluate(bytes => new Promise(resolve => {
     window.term.write(new Uint8Array(bytes), resolve);
   }), Array.from(bytes));
@@ -182,7 +203,7 @@ try {
       }) };
   });
   const bounds = await page.locator('#terminal').boundingBox();
-  await page.setViewportSize({ width: Math.ceil(bounds.width), height: Math.ceil(bounds.height) });
+  if (!video) await page.setViewportSize({ width: Math.ceil(bounds.width), height: Math.ceil(bounds.height) });
   await page.locator('#terminal').screenshot({ path: resolve(evidenceDir, 'terminal.png') });
   await writeFile(resolve(evidenceDir, 'terminal.txt'), screen.lines.join('\n') + '\n');
   await writeFile(resolve(evidenceDir, 'terminal-ansi.txt'), captureBytes);
@@ -227,11 +248,36 @@ try {
       if (!metadata.cleanup.ptyProcessGroupExited) throw new Error('PTY process group failed to exit');
     })(),
     (async () => {
-      if (browser) await browser.close();
-      if (browserServer) {
-        await browserServer.close();
-        metadata.cleanup.browserExited = !alive(metadata.browserPid);
-        if (!metadata.cleanup.browserExited) throw new Error('Browser failed to exit');
+      try {
+        if (context) await context.close();
+        if (video) {
+          const path = resolve(evidenceDir, 'terminal.webm');
+          await video.saveAs(path);
+          await video.delete();
+          const bytes = await readFile(path);
+          const { stdout } = await promisify(execFile)('ffprobe', ['-v', 'error', '-show_format',
+            '-show_streams', '-of', 'json', path], { timeout: 10000 });
+          const probe = JSON.parse(stdout);
+          const durationSeconds = Number(probe.format?.duration);
+          const stream = probe.streams?.find(stream => stream.codec_type === 'video');
+          if (!bytes.length || !Number.isFinite(durationSeconds) || durationSeconds <= 0 || !stream) {
+            throw new Error('Recording has no playable video or positive duration');
+          }
+          Object.assign(metadata.video, { path, sha256: createHash('sha256').update(bytes).digest('hex'),
+            durationSeconds, sizeBytes: bytes.length, width: stream.width, height: stream.height,
+            codec: stream.codec_name });
+          metadata.cleanup.videoFinalized = true;
+        }
+      } finally {
+        try {
+          if (browser) await browser.close();
+        } finally {
+          if (browserServer) {
+            await browserServer.close();
+            metadata.cleanup.browserExited = !alive(metadata.browserPid);
+            if (!metadata.cleanup.browserExited) throw new Error('Browser failed to exit');
+          }
+        }
       }
     })(),
     (async () => {

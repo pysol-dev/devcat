@@ -16,6 +16,23 @@ node script/qa/web-terminal-visual-qa.mjs --title 'PTY fixture' \
   --cols 40 --rows 10 --evidence-dir .omo/evidence/terminal-qa
 ```
 
+Video is **off by default**. Add `--record-video` to a live `--command` run to
+save an unedited `terminal.webm` of that browser session, including the actual
+PTY output and timed inputs. Replay with `--from-file` cannot record video.
+Use synthetic text: opting in records everything visible during the session.
+Install the development-only encoder once with
+`node script/qa/node_modules/playwright-core/cli.js install ffmpeg` and have
+`ffprobe` on PATH. No additional dependency is needed by `bongo`.
+The recording includes browser setup through the final screen; the video canvas is sized
+to the terminal before the PTY starts. The separate PNG keeps the requested pixel scale.
+Metadata records the video path, SHA-256, duration in seconds, byte size, codec,
+and dimensions. Context closure finalizes the WebM before browser teardown;
+recording or probe failures produce a nonzero exit and still run cleanup.
+
+Verify recording with `node script/qa/verify-video.mjs <evidence-dir>` (requires
+`ffmpeg` and `ffprobe`); this runs six slow keys plus Backspace/Enter in the safe
+fixture, checks decoded motion frames and metadata, and records cleanup.
+
 `--from-file path/to/raw.ansi` replays bytes through the same xterm.js renderer.
 `--input` accepts literal text or the key notation listed by `--help`; shell
 ANSI quoting can send bracketed paste. `--settle-ms` controls the delay before
