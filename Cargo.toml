@@ -37,3 +37,7 @@ codegen-units = 1
 [[example]]
 name = "transport-fixture"
 path = "tests/fixtures/transport.rs"
+
+[[example]]
+name = "composer-fixture"
+path = "tests/fixtures/composer.rs"
