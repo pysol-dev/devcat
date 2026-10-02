@@ -88,13 +88,15 @@ impl Composer {
         let status = rows.saturating_sub(6).max(1);
         let composer = rows.saturating_sub(4).max(1);
         let bottom = rows.saturating_sub(1).max(1);
+        let status_text = "─ fixture │ model │ context ";
         write!(
             output,
             "\x1b[?25l\x1b[0m\x1b[2J\x1b[Hcontrolled composer fixture {cols}x{rows}\r\nCtrl+O modal | Ctrl+T alternate | Ctrl+D exit"
         )?;
         write!(
             output,
-            "\x1b[{status};1H─ fixture │ model │ context\x1b[{bottom};1H{}",
+            "\x1b[{status};1H{status_text}{}\x1b[{bottom};1H{}",
+            "─".repeat(usize::from(cols).saturating_sub(status_text.chars().count())),
             "─".repeat(usize::from(cols))
         )?;
         // Keep arbitrary synthetic drafts within the composer viewport, including wide UTF-8.

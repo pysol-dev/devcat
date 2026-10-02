@@ -9,7 +9,7 @@ target/debug/examples/composer-fixture --exit-code 37
 
 Run in a real terminal. Type a draft; Backspace deletes its last Unicode scalar. Bracketed paste appends text as one draft. Ctrl+O toggles a modal occupying the safe area. Ctrl+T toggles alternate screen. Ctrl+D or Ctrl+C exits with the configured status (default 37). The final `FIXTURE_RECEIPT:` JSON contains only the synthetic bytes, draft, terminal size, and requested exit status.
 
-At 80x24 the status bar is row 18, the composer starts on row 20, and the bottom rule occupies row 23. Columns 63–78 on rows 13–17 are blank with default style. At 120x40 those rows move to 34, 36, 39 and the safe area becomes columns 103–118 on rows 29–33. Dimensions come from the PTY; resize redraw is polled every 50 ms. The draft viewport is two rows and preserves the complete draft in the exit receipt.
+At 80x24 the status bar is row 18, the composer starts on row 20, and the bottom rule occupies row 23. The information divider preserves `─ fixture │ model │ context ` in columns 1–28 and fills columns 29–80 with `─`, directly beneath the cat. Columns 63–78 on rows 13–17 are blank with default style. At 120x40 those rows move to 34, 36, 39 and the safe area becomes columns 103–118 on rows 29–33; the information divider fills columns 29–120 with `─`. The PTY test asserts divider cells directly below the entire cat rectangle at both sizes. Dimensions come from the PTY; resize redraw is polled every 50 ms. The draft viewport is two rows and preserves the complete draft in the exit receipt.
 
 Build the example before testing, because Cargo integration tests do not rebuild example executables automatically:
 

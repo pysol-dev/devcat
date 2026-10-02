@@ -21,6 +21,15 @@ fn blank_safe_area(screen: &vt100::Screen) -> bool {
     })
 }
 
+fn divider_under_cat(screen: &vt100::Screen) -> bool {
+    let (rows, cols) = screen.size();
+    (cols - 18..cols - 2).all(|col| {
+        screen
+            .cell(rows - 7, col)
+            .is_some_and(|cell| cell.contents() == "─")
+    })
+}
+
 #[test]
 fn composer_transitions_when_driven_through_a_real_pty() -> Result<()> {
     // Given a synthetic composer with an actual 80x24 PTY.
@@ -36,6 +45,10 @@ fn composer_transitions_when_driven_through_a_real_pty() -> Result<()> {
     ensure!(
         session.parser.screen().rows(0, 80).nth(22) == Some("─".repeat(80)),
         "bottom rule must occupy row23"
+    );
+    ensure!(
+        divider_under_cat(session.parser.screen()),
+        "visible divider directly below cat at 80x24"
     );
     // When typing, deleting, pasting, opening a modal, resizing, toggling screens, then exiting.
     for byte in b"abcdef" {
@@ -85,6 +98,10 @@ fn composer_transitions_when_driven_through_a_real_pty() -> Result<()> {
     ensure!(
         session.parser.screen().rows(0, 120).nth(38) == Some("─".repeat(120)),
         "resized bottom rule must occupy row39"
+    );
+    ensure!(
+        divider_under_cat(session.parser.screen()),
+        "visible divider directly below cat at 120x40"
     );
     session.send(b"\x14")?;
     session.frame("08-alternate", vt100::Screen::alternate_screen)?;
