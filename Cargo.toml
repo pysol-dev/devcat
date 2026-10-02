@@ -1,0 +1,39 @@
+[package]
+name = "bongo"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+description = "A transparent terminal launcher for stock agent executables"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+nix = { version = "0.29", features = ["term", "poll", "signal"] }
+portable-pty = "0.9"
+signal-hook = "0.3"
+terminal_size = "0.4"
+serde_json = "1"
+vt100 = "0.16"
+
+[lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+todo = "deny"
+unimplemented = "deny"
+allow_attributes = "deny"
+let_underscore_must_use = "deny"
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[[example]]
+name = "transport-fixture"
+path = "tests/fixtures/transport.rs"
