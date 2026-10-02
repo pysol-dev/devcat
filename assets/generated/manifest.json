@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generator_version": 1,
-  "generator_sha256": "b03c7395d76ef55b936816453def7a14f3e3b0c419cda0b5600457bb1d07f45b",
+  "generator_version": 4,
+  "generator_sha256": "bc6f2ec49727f2b8361de7e36c0105c5ee7850927eacb1034a06e0b0876d8585",
   "source_repository": "https://github.com/kitgore/BongoCat",
   "source_commit": "20e59c96cd25e4dcc098a5ab908bb27cdd4caabc",
   "license": "MIT",
@@ -43,15 +43,53 @@
   ],
   "compact_cell_pixels": [
     16,
-    10
+    8
   ],
+  "compact_shared_mapping": {
+    "upper_source_box": [
+      0,
+      8,
+      272,
+      96
+    ],
+    "upper_output_box": [
+      0,
+      0,
+      16,
+      7
+    ],
+    "upper_filter": "Lanczos",
+    "contact_source_boxes": {
+      "idle": [
+        0,
+        100,
+        272,
+        104
+      ],
+      "left": [
+        0,
+        124,
+        272,
+        133
+      ],
+      "right": [
+        0,
+        127,
+        272,
+        135
+      ]
+    },
+    "contact_output_row": 7,
+    "contact_filter": "BOX area average to 16 by 1; no maximum pooling",
+    "source_boxes_half_open": true
+  },
   "outputs": {
     "idle.png": "bb8723e9b43847d7dbbbd45e90923f9423d126cce59b625f2e8fe86f3969fe94",
     "left.png": "702e764e2b6b9b84a02b744502e355dd144d085f6d24d2f0ec8de81bf2d2f439",
     "right.png": "3d4cee0b0d0dd0eb92d6f6323544fc99fe54a607c74c9128efadbef2e853dc27",
     "cells.json": "85cc894e7aa6f3103e8645b3fbe94aaca1785cb4b6971bdd5dc037b00d55058b",
     "preview.png": "5711018910d8905fdd649b94f123261da1d3b69bdc9033de295a5fd77ffdfe3b",
-    "compact-cells.json": "b47259fa83ad2eb1695f266ea5100b6373d92d7fa1673eeedfa7326a100417d5",
-    "compact-preview.png": "d89fad4a3ee3da2ec260acc2bcc39bf63288b91d13065451043f80b6bde18421"
+    "compact-cells.json": "804d34439e171a7ec6dff4dc643cf604f434eff9a8356329315499efa74cdd57",
+    "compact-preview.png": "60dc20349e5d1498e1b94a9afb7e5fe9497d7c87727dec3f7ce6a3cf1e2be424"
   }
 }

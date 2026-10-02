@@ -33,6 +33,45 @@ def test_font_matches_audited_source() -> None:
     assert actual == FONT_SHA256
 
 
+@pytest.mark.parametrize("name", ["idle", "left", "right"])
+def test_compact_pose_contacts_the_next_row(name: str) -> None:
+    # Given: a runtime pose placed immediately above a terminal divider.
+    cells = json.loads((OUTPUT / "compact-cells.json").read_text(encoding="utf-8"))
+    # When: reading its bottom rendered row.
+    bottom = cells["frames"][name]["monochrome_rows"][-1]
+    # Then: visible ink reaches the lower half; no blank row or half-row remains.
+    assert any(glyph in "▄█" for glyph in bottom)
+
+
+@pytest.mark.parametrize("name", ["idle", "left", "right"])
+def test_compact_bottom_row_preserves_outline_space(name: str) -> None:
+    # Given: the bottom terminal cell row, consisting of two alpha samples.
+    cells = json.loads((OUTPUT / "compact-cells.json").read_text(encoding="utf-8"))
+    samples = bytes.fromhex("".join(cells["frames"][name]["alpha_rows"][-2:]))
+    # When: counting visible ink in the bottom row.
+    fill_ratio = sum(alpha >= 96 for alpha in samples) / len(samples)
+    # Then: at least half stays open, rejecting a solid rectangular base.
+    assert fill_ratio <= 0.5
+
+
+@pytest.mark.parametrize("pair,start,stop", [("dc", 11, 16), ("ba", 0, 6)])
+def test_compact_strike_preserves_unchanged_head_and_eye(
+    pair: str, start: int, stop: int,
+) -> None:
+    # Given: idle and strike poses with one identical original glyph half.
+    font = load_font()
+    idle = cell_frame(render_frame("bc", font), COMPACT_PIXELS, "idle")
+    # When: downsampling the strike into the runtime cells.
+    strike = cell_frame(render_frame(pair, font), COMPACT_PIXELS, {"dc": "left", "ba": "right"}[pair])
+    # Then: coverage remains registered (one alpha level of Lanczos seam rounding).
+    for idle_row, strike_row in zip(idle["alpha_rows"][:7], strike["alpha_rows"][:7], strict=True):
+        for idle_alpha, strike_alpha in zip(
+            bytes.fromhex(idle_row)[start:stop], bytes.fromhex(strike_row)[start:stop], strict=True,
+        ):
+            assert abs(idle_alpha - strike_alpha) <= 1
+            assert (idle_alpha >= 96) == (strike_alpha >= 96)
+
+
 @pytest.mark.parametrize("pair,changed_half", [("dc", 0), ("ba", 1)])
 def test_strike_changes_only_its_paw_half(pair: str, changed_half: int) -> None:
     # Given: the original idle glyphs, rendered from their source outlines.
@@ -65,10 +104,20 @@ def test_cell_samples_preserve_png_alpha(name: str, pixels: tuple[int, int]) -> 
         assert image.mode == "RGBA"
         assert image.size == CANVAS
         # When: converting to the cell renderer contract.
-        cells = cell_frame(image, pixels)
+        cells = cell_frame(image, pixels, name)
         # Then: decoded rows equal the filtered source alpha byte for byte.
-        expected = image.getchannel("A").resize(pixels, Image.Resampling.LANCZOS)
-        assert bytes.fromhex("".join(cells["alpha_rows"])) == expected.tobytes()
+        source = image.getchannel("A")
+        if pixels == COMPACT_PIXELS:
+            # Fixed source coordinates lock upper head/body/eyes to one mapping.
+            expected = Image.new("L", (16, 8))
+            expected.paste(source.crop((0, 8, 272, 96)).resize((16, 7), Image.Resampling.LANCZOS))
+            top, bottom = {"idle": (100, 104), "left": (124, 133), "right": (127, 135)}[name]
+            expected.paste(source.crop((0, top, 272, bottom)).resize((16, 1), Image.Resampling.BOX), (0, 7))
+            actual = bytes.fromhex("".join(cells["alpha_rows"]))
+        else:
+            expected = source.resize(pixels, Image.Resampling.LANCZOS)
+            actual = bytes.fromhex("".join(cells["alpha_rows"]))
+        assert actual == expected.tobytes()
         assert len(cells["monochrome_rows"]) == pixels[1] // 2
         assert all(len(row) == pixels[0] for row in cells["monochrome_rows"])
 
@@ -87,7 +136,7 @@ def test_manifest_and_cells_match_published_files(
     derived = {}
     for name in ("idle", "left", "right"):
         with Image.open(OUTPUT / f"{name}.png") as image:
-            derived[name] = cell_frame(image, pixels)
+            derived[name] = cell_frame(image, pixels, name)
     # Then: no stale output, generator, or frame encoding can pass.
     assert actual == manifest["outputs"]
     assert manifest["generator_sha256"] == sha256(Path(__file__).with_name("generate_assets.py"))

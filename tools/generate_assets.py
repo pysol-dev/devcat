@@ -30,7 +30,8 @@ CANVAS: Final = (272, 152)
 ORIGIN: Final = (8, 128)
 EM_SIZE: Final = 128
 CELL_PIXELS: Final = (34, 20)
-COMPACT_PIXELS: Final = (16, 10)
+COMPACT_PIXELS: Final = (16, 8)
+CONTACT_WINDOWS: Final = {"idle": (100, 104), "left": (124, 133), "right": (127, 135)}
 MONO_THRESHOLD: Final = 96
 
 
@@ -80,9 +81,24 @@ def render_frame(pair: str, font: ImageFont.FreeTypeFont) -> Image.Image:
     return frame
 
 
-def cell_frame(frame: Image.Image, pixels: tuple[int, int] = CELL_PIXELS) -> CellFrame:
+def sample_alpha(frame: Image.Image, pixels: tuple[int, int], pose: str) -> Image.Image:
+    """Keep common upper geometry and average only the pose's narrow contact strip."""
+    alpha = frame.getchannel("A")
+    if pixels == COMPACT_PIXELS:
+        compact = Image.new("L", COMPACT_PIXELS)
+        compact.paste(alpha.crop((0, 8, 272, 96)).resize(
+            (16, 7), Image.Resampling.LANCZOS,
+        ), (0, 0))
+        top, bottom = CONTACT_WINDOWS[pose]
+        contact = alpha.crop((0, top, 272, bottom)).resize((16, 1), Image.Resampling.BOX)
+        compact.paste(contact, (0, 7))
+        return compact
+    return alpha.resize(pixels, Image.Resampling.LANCZOS)
+
+
+def cell_frame(frame: Image.Image, pixels: tuple[int, int], pose: str) -> CellFrame:
     """Store theme-independent alpha coverage; each cell has two samples."""
-    alpha = frame.getchannel("A").resize(pixels, Image.Resampling.LANCZOS)
+    alpha = sample_alpha(frame, pixels, pose)
     width, height = alpha.size
     samples = alpha.tobytes()
     rows = [samples[y * width:(y + 1) * width] for y in range(height)]
@@ -116,9 +132,11 @@ def preview(
             draw.text((left + 8, top + 10), name, fill=foreground)
             ink = Image.new("RGB", frame.size, foreground)
             sheet.paste(ink, (left, top + 34), frame.getchannel("A"))
-            pixels = frame.getchannel("A").resize(
-                cell_pixels, Image.Resampling.LANCZOS,
-            ).resize(CANVAS, Image.Resampling.NEAREST)
+            samples = sample_alpha(frame, cell_pixels, name)
+            if cell_pixels == COMPACT_PIXELS:
+                samples = samples.point(lambda alpha: 255 if alpha >= MONO_THRESHOLD else 0)
+                draw.line((left, top + 326, left + 271, top + 326), fill=foreground)
+            pixels = samples.resize(CANVAS, Image.Resampling.NEAREST)
             sheet.paste(ink, (left, top + 174), pixels)
     return sheet
 
@@ -138,7 +156,7 @@ def main() -> None:
             "encoding": "alpha8-hex-rows-top-to-bottom",
             "foreground_rgb": [255, 255, 255],
             "monochrome_threshold": MONO_THRESHOLD,
-            "frames": {name: cell_frame(frame, pixels)
+            "frames": {name: cell_frame(frame, pixels, name)
                        for name, frame in zip(POSES, frames, strict=True)},
         }
         (OUTPUT / filename).write_text(
@@ -150,7 +168,7 @@ def main() -> None:
     products = [*(f"{name}.png" for name in POSES), "cells.json", "preview.png",
                 "compact-cells.json", "compact-preview.png"]
     manifest = {
-        "schema_version": 1, "generator_version": 1,
+        "schema_version": 1, "generator_version": 4,
         "generator_sha256": sha256(Path(__file__)),
         "source_repository": "https://github.com/kitgore/BongoCat",
         "source_commit": "20e59c96cd25e4dcc098a5ab908bb27cdd4caabc",
@@ -165,6 +183,16 @@ def main() -> None:
         "palette_rgba": [255, 255, 255, 255],
         "cell_pixels": list(CELL_PIXELS),
         "compact_cell_pixels": list(COMPACT_PIXELS),
+        "compact_shared_mapping": {
+            "upper_source_box": [0, 8, 272, 96],
+            "upper_output_box": [0, 0, 16, 7],
+            "upper_filter": "Lanczos",
+            "contact_source_boxes": {name: [0, top, 272, bottom]
+                                     for name, (top, bottom) in CONTACT_WINDOWS.items()},
+            "contact_output_row": 7,
+            "contact_filter": "BOX area average to 16 by 1; no maximum pooling",
+            "source_boxes_half_open": True,
+        },
         "outputs": {name: sha256(OUTPUT / name) for name in products},
     }
     (OUTPUT / "manifest.json").write_text(

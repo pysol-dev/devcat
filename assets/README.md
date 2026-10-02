@@ -35,10 +35,22 @@ uses dark `#1e1e1e` with `#f0f0f0` ink, and light `#f5f5f5` with `#1e1e1e` ink.
   These rows preserve all three paw states without requiring truecolor.
 
 For runtime use in small terminal layouts, prefer `generated/compact-cells.json`:
-it has the same schema at **16 columns × 5 rows**, with ten alpha rows of sixteen
-bytes (32 hex characters each), and five monochrome rows of sixteen characters.
-`generated/compact-preview.png` compares the original art with this smaller
-approximation on both themes. `cells.json` remains the larger reference variant.
+it has the same schema at **16 columns × 4 rows**, with eight alpha rows of sixteen
+bytes (32 hex characters each), and four monochrome rows of sixteen characters.
+Every pose uses the **same upper source coordinates and filtering**. Original
+pixels y=8..95 become the first seven samples through Lanczos resizing. The eighth
+sample is an area average (BOX filter) of a narrow original contact strip: idle
+y=100..103, left y=124..132, right y=127..134. Sampling the idle baseline only once
+keeps its line thin; averaging narrow paw/droplet strips keeps strikes sparse.
+Only that final half-cell uses pose-specific contact registration. Head/body/eye
+coordinates and scale remain identical across all three frames.
+Its lowest visible pixel reaches the bottom half of the last cell, so placing
+the frame immediately above a divider leaves no empty row or half-row. The
+compact contact band compresses strike marks; the raster PNGs retain the full
+original outlines at their common source baseline.
+`generated/compact-preview.png` compares original art with the exact thresholded
+monochrome approximation touching a divider on both themes. `cells.json` remains
+the larger reference variant with its original canvas padding.
 
 The cells are an approximation of the original font. Actual terminal rendering,
 font metrics, placement, background restoration, and host compatibility require
