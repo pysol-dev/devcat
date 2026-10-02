@@ -73,7 +73,7 @@ const metadata = {
   capture: null, cleanup: {}, error: null,
 };
 const raw = [];
-let browserServer, browser, terminal, terminalExited, server, port;
+let browserServer, browser, terminal, server, port;
 let exitObserved = false;
 let writeQueue = Promise.resolve();
 let renderError;
@@ -89,7 +89,11 @@ const assertRunning = () => {
 };
 const alive = pid => {
   try { process.kill(pid, 0); return true; }
-  catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+  catch (error) {
+    if (error.code === 'ESRCH') return false;
+    if (error.code === 'EPERM') return true;
+    throw error;
+  }
 };
 try {
   const js = await readFile(require.resolve('@xterm/xterm'));
@@ -133,9 +137,7 @@ try {
     terminal = pty.spawn('/bin/sh', ['-c', values.command], { name: 'xterm-256color', cols, rows,
       cwd: process.cwd(), env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' }, encoding: null });
     metadata.ptyPid = terminal.pid;
-    terminalExited = new Promise(resolve => terminal.onExit(event => {
-      exitObserved = true; metadata.ptyExit = event; resolve();
-    }));
+    terminal.onExit(event => { exitObserved = true; metadata.ptyExit = event; });
     terminal.onData(bytes => {
       const chunk = Buffer.from(bytes); raw.push(chunk);
       writeQueue = writeQueue.then(() => write(chunk)).catch(error => { renderError = error; });
@@ -195,12 +197,29 @@ try {
       terminal.resume();
       const signalGroup = signal => {
         try { process.kill(-terminal.pid, signal); }
-        catch (error) { if (error.code !== 'ESRCH') throw error; }
+        catch (error) {
+          // An exiting macOS process group can transiently reject a signal.
+          // Only disappearance below proves cleanup; EPERM never counts as exit.
+          if (error.code !== 'ESRCH' && error.code !== 'EPERM') throw error;
+        }
       };
+      const waitForGroupExit = async () => {
+        const deadline = Date.now() + 1500;
+        while (!exitObserved || alive(terminal.pid) || alive(-terminal.pid)) {
+          if (Date.now() >= deadline) return false;
+          await delay(20);
+        }
+        return true;
+      };
+      metadata.cleanup.ptySignals = [];
       if (alive(-terminal.pid)) {
+        metadata.cleanup.ptySignals.push('SIGTERM');
         signalGroup('SIGTERM');
-        await Promise.race([terminalExited, delay(1500)]);
-        if (alive(-terminal.pid)) { signalGroup('SIGKILL'); await Promise.race([terminalExited, delay(1500)]); }
+      }
+      if (!await waitForGroupExit()) {
+        metadata.cleanup.ptySignals.push('SIGKILL');
+        signalGroup('SIGKILL');
+        await waitForGroupExit();
       }
       metadata.cleanup.ptyExited = exitObserved && !alive(terminal.pid);
       metadata.cleanup.ptyProcessGroupExited = !alive(-terminal.pid);

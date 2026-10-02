@@ -31,6 +31,13 @@ capture or cleanup fails. ANSI is a raw stream; text is the final viewport,
 not a regex-stripped transcript. xterm.js reproduces terminal cell rendering;
 it is not evidence of Kitty/iTerm raster protocol support.
 
+PTY teardown waits up to 1.5 seconds after SIGTERM for both the direct child
+and its process group to disappear, then up to 1.5 seconds after SIGKILL.
+The direct child's exit alone does not prove descendant cleanup. Run the
+forking regression with `node script/qa/verify-forking-cleanup.mjs <evidence-dir>`;
+it launches a real PTY whose child ignores SIGTERM, and checks both fixture PIDs,
+the group, browser, and port cleanup before recording `verified.json`.
+
 References: [node-pty](https://github.com/microsoft/node-pty),
 [xterm.js](https://xtermjs.org/docs/),
 [Playwright BrowserType](https://playwright.dev/docs/api/class-browsertype).
