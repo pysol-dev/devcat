@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "utilities_unlocked": false,
+  "gates": {
+    "controlled_foundation": { "version": "0.0.1", "status": "pending", "evidence": [] },
+    "stock_hermes": { "version": "0.1.0", "status": "pending", "evidence": [] },
+    "stock_claude": { "version": "0.2.0", "status": "pending", "evidence": [] },
+    "stock_codex": { "version": "0.3.0", "status": "pending", "evidence": [] },
+    "shared_compatibility": { "version": "0.4.0", "status": "pending", "evidence": [] }
+  }
+}

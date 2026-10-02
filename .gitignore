@@ -1,0 +1,7 @@
+/target/
+/.omo/ulw-loop/
+/.omo/evidence/
+/evidence/
+__pycache__/
+.pytest_cache/
+.venv/
