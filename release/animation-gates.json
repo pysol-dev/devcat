@@ -4,8 +4,8 @@
   "gates": {
     "controlled_foundation": { "version": "0.0.1", "status": "pending", "evidence": [] },
     "stock_hermes": { "version": "0.1.0", "status": "pending", "evidence": [] },
-    "stock_claude": { "version": "0.2.0", "status": "pending", "evidence": [] },
+    "stock_claude": { "version": "0.2.0", "status": "blocked", "blocker": "The isolated official Claude Code 2.1.288 test installation is not logged in; an authenticated stock composer and animation cannot be observed until sign-in is completed.", "evidence": [] },
     "stock_codex": { "version": "0.3.0", "status": "pending", "evidence": [] },
-    "shared_compatibility": { "version": "0.4.0", "status": "pending", "evidence": [] }
+    "shared_compatibility": { "version": "0.4.0", "status": "blocked", "blocker": "A live Kitty-capable terminal screenshot or recording and the required Linux x86-64 run are unavailable; synthetic graphics replies and xterm cell fallback are not native graphics certification.", "evidence": [] }
   }
 }
