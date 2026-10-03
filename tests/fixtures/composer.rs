@@ -96,7 +96,7 @@ impl Composer {
         write!(
             output,
             "\x1b[{status};1H{status_text}{}\x1b[{bottom};1H{}",
-            "─".repeat(usize::from(cols).saturating_sub(status_text.chars().count())),
+            "▔".repeat(usize::from(cols).saturating_sub(status_text.chars().count())),
             "─".repeat(usize::from(cols))
         )?;
         // Keep arbitrary synthetic drafts within the composer viewport, including wide UTF-8.

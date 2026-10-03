@@ -26,7 +26,7 @@ fn divider_under_cat(screen: &vt100::Screen) -> bool {
     (cols - 18..cols - 2).all(|col| {
         screen
             .cell(rows - 7, col)
-            .is_some_and(|cell| cell.contents() == "─")
+            .is_some_and(|cell| cell.contents() == "▔")
     })
 }
 
