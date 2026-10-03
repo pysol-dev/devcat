@@ -4,7 +4,7 @@ use std::os::fd::AsFd;
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitCode;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
@@ -15,7 +15,7 @@ use signal_hook::consts::signal::{SIGCONT, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIG
 use signal_hook::iterator::Signals;
 
 use crate::terminal::{self, Terminal};
-use crate::{compositor::Compositor, profile::Profile};
+use crate::{compositor::Compositor, profile::Profile, sync_batch::SyncBatcher};
 
 #[expect(
     clippy::too_many_lines,
@@ -76,6 +76,7 @@ pub(crate) fn run(
     let output_thread = std::thread::spawn(move || read_output(reader.as_mut(), &send));
     let mut buffer = [0; 8192];
     let mut composed_output = Vec::with_capacity(16384);
+    let mut sync_batcher = compositor.is_some().then(SyncBatcher::default);
     let transport_result: Result<()> = (|| {
         if let Some(destination) = writer.as_mut() {
             destination.write_all(&buffered_input)?;
@@ -89,6 +90,12 @@ pub(crate) fn run(
             for signal in signals.pending() {
                 match signal {
                     SIGWINCH => {
+                        flush_pending(
+                            &mut sync_batcher,
+                            &mut compositor,
+                            &mut composed_output,
+                            &mut output,
+                        )?;
                         let size = terminal::size()?;
                         // SIGWINCH arrives after terminal reflow: discard old coordinates instead of erasing child cells.
                         if let Some(cat) = &mut compositor {
@@ -98,6 +105,12 @@ pub(crate) fn run(
                         pair.master.resize(size)?;
                     }
                     SIGTSTP => {
+                        flush_pending(
+                            &mut sync_batcher,
+                            &mut compositor,
+                            &mut composed_output,
+                            &mut output,
+                        )?;
                         if let Some(cat) = &mut compositor {
                             cat.suspend(&mut output)?;
                         }
@@ -115,6 +128,12 @@ pub(crate) fn run(
                         forward(pid, Signal::SIGCONT)?;
                     }
                     SIGCONT => {
+                        flush_pending(
+                            &mut sync_batcher,
+                            &mut compositor,
+                            &mut composed_output,
+                            &mut output,
+                        )?;
                         terminal.resume()?;
                         let size = terminal::size()?;
                         if let Some(cat) = &mut compositor {
@@ -154,29 +173,51 @@ pub(crate) fn run(
             }
             match receive.recv_timeout(Duration::from_millis(2)) {
                 Ok(Ok(bytes)) => {
-                    match &mut compositor {
-                        Some(cat) => {
-                            composed_output.clear();
-                            cat.output(&bytes, &mut composed_output)?;
-                            cat.tick(&mut composed_output)?;
-                            output.write_all(&composed_output)?;
-                        }
-                        None => output.write_all(&bytes)?,
+                    let packets = sync_batcher.as_mut().map_or_else(
+                        || vec![bytes.clone()],
+                        |batcher| batcher.feed(&bytes, Instant::now()),
+                    );
+                    for packet in packets {
+                        write_child_output(
+                            &packet,
+                            &mut compositor,
+                            &mut composed_output,
+                            &mut output,
+                        )?;
                     }
-                    output.flush()?;
                 }
                 Ok(Err(error)) if error.raw_os_error() == Some(nix::libc::EIO) => break,
                 Ok(Err(error)) => return Err(error.into()),
-                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    if let Some(packet) = sync_batcher
+                        .as_mut()
+                        .and_then(|batcher| batcher.expire(Instant::now()))
+                    {
+                        write_child_output(
+                            &packet,
+                            &mut compositor,
+                            &mut composed_output,
+                            &mut output,
+                        )?;
+                    }
+                }
                 Err(RecvTimeoutError::Disconnected) => break,
             }
-            if let Some(cat) = &mut compositor {
+            if !sync_batcher.as_ref().is_some_and(SyncBatcher::in_sync)
+                && let Some(cat) = &mut compositor
+            {
                 composed_output.clear();
                 cat.tick(&mut composed_output)?;
                 output.write_all(&composed_output)?;
                 output.flush()?;
             }
         }
+        flush_pending(
+            &mut sync_batcher,
+            &mut compositor,
+            &mut composed_output,
+            &mut output,
+        )?;
         Ok(())
     })();
     let cleanup_result = match &mut compositor {
@@ -207,6 +248,40 @@ pub(crate) fn run(
         }
         (None, None) => anyhow::bail!("child has no final process status"),
     }
+}
+
+fn write_child_output(
+    bytes: &[u8],
+    compositor: &mut Option<Compositor>,
+    composed_output: &mut Vec<u8>,
+    output: &mut impl Write,
+) -> Result<()> {
+    match compositor {
+        Some(cat) => {
+            composed_output.clear();
+            cat.output(bytes, composed_output)?;
+            cat.tick(composed_output)?;
+            output.write_all(composed_output)?;
+        }
+        None => output.write_all(bytes)?,
+    }
+    output.flush()?;
+    Ok(())
+}
+
+fn flush_pending(
+    batcher: &mut Option<SyncBatcher>,
+    compositor: &mut Option<Compositor>,
+    composed_output: &mut Vec<u8>,
+    output: &mut impl Write,
+) -> Result<()> {
+    if let Some(batcher) = batcher {
+        let previous = std::mem::take(batcher);
+        if let Some(packet) = previous.finish() {
+            write_child_output(&packet, compositor, composed_output, output)?;
+        }
+    }
+    Ok(())
 }
 
 fn command(args: &[OsString]) -> Result<CommandBuilder> {

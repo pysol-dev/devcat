@@ -15,6 +15,7 @@ This directory owns the `bongo` executable's terminal behavior. Read the root `A
 | `animation.rs` | Bounded alternating paw state and idle deadline | A backlog of hits |
 | `kitty.rs` | Bounded graphics negotiation and Bongo-owned image cleanup | Claims of untested native rendering |
 | `screen.rs` | Protocol safety guard | Silent acceptance of unsupported terminal modes |
+| `sync_batch.rs` | Bounded atomic forwarding for synchronized child redraws | Delaying input or unbounded output queues |
 | `profile.rs` | Confidence-based safe rectangle for a known host layout | Prompt-body parsing or arbitrary offsets that cover controls |
 | `compositor.rs` | Restore prior cat bounds, forward child output, draw frame, restore cursor/style | Direct terminal ownership outside `pty.rs` |
 

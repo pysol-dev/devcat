@@ -96,9 +96,10 @@ impl Compositor {
             && self.guard.ready()
             && profile::anchor(self.parser.screen(), self.profile, self.frame_rows()).is_some()
     }
-    /// Remove our previous cells before forwarding child bytes, then model only child output.
     pub fn output(&mut self, bytes: &[u8], out: &mut impl Write) -> io::Result<()> {
-        self.erase(out)?;
+        if !non_cell_output(bytes) {
+            self.erase(out)?;
+        }
         out.write_all(bytes)?;
         let clear_generation = self.guard.clear_generation;
         self.guard.observe(bytes);
@@ -142,7 +143,9 @@ impl Compositor {
         self.tick_at(out, Instant::now())
     }
     fn tick_at(&mut self, out: &mut impl Write, now: Instant) -> io::Result<()> {
-        if self.awaiting_clear || !self.guard.ready() {
+        let render_ready =
+            self.guard.ready() || (self.profile == Profile::CodexTui && self.guard.pending_safe());
+        if self.awaiting_clear || !render_ready {
             return Ok(());
         }
         let Some(anchor) = profile::anchor(self.parser.screen(), self.profile, self.frame_rows())
@@ -274,6 +277,69 @@ impl Compositor {
     fn restore_cursor(&self, out: &mut impl Write) -> io::Result<()> {
         out.write_all(&self.parser.screen().cursor_state_formatted())?;
         out.write_all(&self.parser.screen().attributes_formatted())
+    }
+}
+
+fn non_cell_output(mut bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    while !bytes.is_empty() {
+        if bytes.starts_with(b"\x1b[") {
+            let Some(end) = bytes[2..]
+                .iter()
+                .position(|&byte| (0x40..=0x7e).contains(&byte))
+            else {
+                return false;
+            };
+            if !non_cell_csi(&bytes[2..end + 3]) {
+                return false;
+            }
+            bytes = &bytes[end + 3..];
+        } else if bytes.starts_with(b"\x1b]") {
+            let terminator = (2..bytes.len()).find_map(|index| {
+                (bytes[index] == 7).then_some((index, 1)).or_else(|| {
+                    (bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'\\'))
+                        .then_some((index, 2))
+                })
+            });
+            let Some((end, width)) = terminator else {
+                return false;
+            };
+            if end > 1026 || !crate::screen::supported_osc(&bytes[2..end]) {
+                return false;
+            }
+            bytes = &bytes[end + width..];
+        } else if bytes.starts_with(b"\x1b7") || bytes.starts_with(b"\x1b8") {
+            bytes = &bytes[2..];
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+fn non_cell_csi(sequence: &[u8]) -> bool {
+    match sequence.split_last() {
+        Some((&(b'H' | b'f' | b'G' | b'A' | b'B' | b'C' | b'D'), params)) => params
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || *byte == b';'),
+        Some((&b'm', _)) => {
+            crate::screen::supported_sgr(sequence)
+                || [b">4m".as_slice(), b">4;0m"].contains(&sequence)
+        }
+        _ => [
+            b"?25h".as_slice(),
+            b"?25l",
+            b"?2026h",
+            b"?2026l",
+            b"6n",
+            b"c",
+            b"?u",
+            b">7u",
+            b"0 q",
+        ]
+        .contains(&sequence),
     }
 }
 

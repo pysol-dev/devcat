@@ -8,6 +8,7 @@ mod kitty;
 mod profile;
 mod pty;
 mod screen;
+mod sync_batch;
 mod terminal;
 
 use std::process::ExitCode;

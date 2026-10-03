@@ -112,7 +112,7 @@ impl ProtocolGuard {
     }
 }
 
-fn supported_sgr(sequence: &[u8]) -> bool {
+pub(crate) fn supported_sgr(sequence: &[u8]) -> bool {
     let Some(body) = sequence.strip_suffix(b"m") else {
         return false;
     };
@@ -167,7 +167,7 @@ mod tests {
     }
 }
 
-fn supported_osc(sequence: &[u8]) -> bool {
+pub(crate) fn supported_osc(sequence: &[u8]) -> bool {
     sequence.starts_with(b"0;")
         || sequence.starts_with(b"1;")
         || sequence.starts_with(b"2;")

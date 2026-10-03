@@ -74,3 +74,56 @@ fn codex_modal_transition_cannot_turn_a_navigation_key_into_a_strike() -> io::Re
     assert_eq!(cat.drawn_pose, Some(Pose::Idle));
     Ok(())
 }
+
+#[test]
+fn codex_keeps_cat_when_synchronized_update_has_not_changed_safe_chrome() -> io::Result<()> {
+    let mut cat = Compositor::new(40, 120);
+    cat.confirm_profile(Profile::CodexTui);
+    let mut out = Vec::new();
+    cat.output(
+        "\x1b[?1049h\x1b[2J\x1b[37;1H› a\x1b[39;1H  GPT-6-Sol high · /private/tmp/qa\x1b[37;4H"
+            .as_bytes(),
+        &mut out,
+    )?;
+    cat.tick(&mut out)?;
+    assert!(cat.drawn.is_some());
+    cat.output(b"\x1b[?2026h", &mut out)?;
+    cat.tick(&mut out)?;
+    assert!(
+        cat.drawn.is_some(),
+        "a synchronization marker alone must not leave the cat absent"
+    );
+    cat.output(
+        b"\x1b[37;1H\x1b[2K\x1b[35;1Hmodel picker\x1b[?2026l",
+        &mut out,
+    )?;
+    cat.tick(&mut out)?;
+    assert!(cat.drawn.is_none(), "the modal must still hide the cat");
+    Ok(())
+}
+
+#[test]
+fn mode_only_output_keeps_cat_until_a_cell_mutation() -> io::Result<()> {
+    assert!(non_cell_output(b"\x1b[?25l\x1b[1;1H\x1b[?2026h"));
+    assert!(non_cell_output(b"\x1b]2;qa title\x07\x1b[0m\x1b[37;4H"));
+    assert!(!non_cell_output(b"\x1b[1;1H\x1b[J"));
+    assert!(!non_cell_output(b"\x1b[?1049h"));
+    assert!(!non_cell_output(b"\x1b]8;;https://example.invalid\x07"));
+    assert!(!non_cell_output(b"\x1b[?25"));
+
+    let mut cat = Compositor::new(40, 120);
+    cat.confirm_profile(Profile::CodexTui);
+    let mut out = Vec::new();
+    cat.output(
+        "\x1b[?1049h\x1b[2J\x1b[37;1H› a\x1b[39;1H  GPT-6-Sol high · /private/tmp/qa\x1b[37;4H"
+            .as_bytes(),
+        &mut out,
+    )?;
+    cat.tick(&mut out)?;
+    cat.output(b"\x1b[?25l", &mut out)?;
+    assert!(cat.drawn.is_some());
+    cat.output(b"\x1b[37;1H\x1b[2K", &mut out)?;
+    cat.tick(&mut out)?;
+    assert!(cat.drawn.is_none());
+    Ok(())
+}
