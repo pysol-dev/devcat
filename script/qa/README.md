@@ -30,6 +30,12 @@ Metadata records the video path, SHA-256, duration in seconds, byte size, codec,
 and dimensions. Context closure finalizes the WebM before browser teardown;
 recording or probe failures produce a nonzero exit and still run cleanup.
 
+Add `--record-timing` to a live run to save `timing.json`: elapsed times and
+byte offsets for PTY output chunks, plus input write times and byte lengths.
+It records no input text beyond the existing opt-in invocation/ANSI artifacts.
+Use the offsets with `terminal-ansi.txt` to see whether an erase and replacement
+frame arrived in different terminal chunks. Replay cannot record timing.
+
 Verify recording with `node script/qa/verify-video.mjs <evidence-dir>` (requires
 `ffmpeg` and `ffprobe`); this runs six slow keys plus Backspace/Enter in the safe
 fixture, checks decoded motion frames and metadata, and records cleanup.

@@ -24,6 +24,7 @@ const { values } = parseArgs({ options: {
   'input-delay-ms': { type: 'string', default: '200' },
   'wait-for': { type: 'string' }, 'timeout-ms': { type: 'string', default: '15000' },
   'record-video': { type: 'boolean', default: false },
+  'record-timing': { type: 'boolean', default: false },
   browser: { type: 'string' }, help: { type: 'boolean', default: false },
 } });
 if (values.help) {
@@ -32,6 +33,7 @@ if (values.help) {
   --input TEXT --input '{Enter}' --input '{Backspace}' --input '{Resize:80x24}'
   --wait-for TEXT --timeout-ms 15000 --settle-ms 500 --input-delay-ms 200
   --record-video (opt-in live WebM; requires Playwright ffmpeg and ffprobe)
+  --record-timing (opt-in PTY output chunk offsets and input write times)
   --browser /path/to/chrome (otherwise installed Google Chrome)
 Captures the active screen before terminating the PTY. --wait-for matches raw output.
 Keys: Enter, Backspace, Tab, Escape, arrows, Home, End, Delete, Ctrl+A..Z.
@@ -44,6 +46,7 @@ if (Boolean(values.command) === Boolean(values['from-file'])) {
   throw new TypeError('Specify exactly one of --command or --from-file');
 }
 if (values['from-file'] && values['record-video']) throw new TypeError('--record-video requires a live --command, not --from-file');
+if (values['from-file'] && values['record-timing']) throw new TypeError('--record-timing requires a live --command, not --from-file');
 if (values['from-file'] && values.input.length) throw new TypeError('Replay cannot accept --input');
 const numeric = (key, min, max) => {
   const value = Number(values[key]);
@@ -88,6 +91,9 @@ const metadata = {
   resizeEvents: [], capture: null, cleanup: {}, error: null,
 };
 const raw = [];
+const timing = values['record-timing'] ? { startedAt: new Date().toISOString(), outputChunks: [], inputWrites: [] } : null;
+const timingStart = performance.now();
+let outputBytes = 0;
 let browserServer, browser, context, video, terminal, server, port;
 let exitObserved = false;
 let writeQueue = Promise.resolve();
@@ -180,6 +186,8 @@ try {
     terminal.onExit(event => { exitObserved = true; metadata.ptyExit = event; });
     terminal.onData(bytes => {
       const chunk = Buffer.from(bytes); raw.push(chunk);
+      if (timing) timing.outputChunks.push({ offset: outputBytes, length: chunk.length, atMs: performance.now() - timingStart });
+      outputBytes += chunk.length;
       writeQueue = writeQueue.then(() => write(chunk)).catch(error => { renderError = error; });
     });
     if (values['wait-for']) {
@@ -214,6 +222,7 @@ try {
         event.observedMs = performance.now() - sequenceStarted;
         event.lines = await screenLines();
       } else {
+        if (timing) timing.inputWrites.push({ inputIndex, atMs: performance.now() - timingStart, byteLength: Buffer.byteLength(input) });
         terminal.write(input);
         await delay(inputDelayMs);
       }
@@ -336,6 +345,12 @@ try {
   metadata.cleanup.errors = cleanup.filter(result => result.status === 'rejected').map(result => String(result.reason));
   metadata.cleanup.completedAt = new Date().toISOString();
   if (metadata.cleanup.errors.length) process.exitCode = 1;
+  if (timing) {
+    timing.outputChunks = timing.outputChunks.filter(chunk => chunk.offset < (metadata.capture?.ansiBytes ?? outputBytes));
+    await writeFile(resolve(evidenceDir, 'timing.json'), JSON.stringify(timing, null, 2) + '\n');
+    metadata.timing = { path: resolve(evidenceDir, 'timing.json'), outputChunks: timing.outputChunks.length,
+      inputWrites: timing.inputWrites.length };
+  }
   await writeFile(resolve(evidenceDir, 'metadata.json'), JSON.stringify(metadata, null, 2) + '\n');
   process.off('SIGINT', onInt); process.off('SIGTERM', onTerm);
 }
