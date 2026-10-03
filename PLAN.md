@@ -20,6 +20,8 @@ The child remains the user's existing installation, authentication, configuratio
 
 The first implementation milestone is 0.0.1 followed by Hermes 0.1.0. Do not claim or version later gates early. After Hermes passes, test Claude and then Codex. `release/animation-gates.json` starts with every gate pending and `utilities_unlocked: false`; a pass records wrapper commit, artwork hash, child executable/version, OS, terminal/version, renderer, exact commands, screenshot, short unedited recording, result, and cleanup. Missing credentials or hardware make a gate blocked, never passed. CI must reject utility feature paths while any gate is pending or blocked.
 
+After all four animation and compatibility gates pass, evaluate the requested Hyperpower screen and typing animation as an optional effect. It needs its own real-terminal motion capture, input-latency measurement, reduced-motion behavior, and regression run across the three stock hosts. It must not delay or replace paw strikes. No Hyperpower implementation belongs in the foundation milestones.
+
 ## Build sequence
 
 ### 1. Audit and render the cat
