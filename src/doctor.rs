@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-pub(crate) fn report(host: &OsStr) -> Result<()> {
+pub(crate) fn report(host: &OsStr, renderer: crate::cli::Renderer, no_cat: bool) -> Result<()> {
     let path = Path::new(host);
     let executable = if path.components().count() > 1 {
         Some(path.to_path_buf()).filter(|path| is_executable(path))
@@ -37,7 +37,17 @@ pub(crate) fn report(host: &OsStr) -> Result<()> {
         Some((width, height)) => writeln!(output, "dimensions: {}x{}", width.0, height.0)?,
         None => writeln!(output, "dimensions: unavailable (not a terminal)")?,
     }
-    writeln!(output, "renderer: passthrough (cat disabled)")?;
+    let reason = if no_cat {
+        "passthrough (cat disabled)"
+    } else {
+        match renderer {
+            crate::cli::Renderer::Cells => "cells (explicit selection)",
+            crate::cli::Renderer::Auto | crate::cli::Renderer::Kitty => {
+                "cells (not probed: doctor does not consume terminal input; launcher negotiates before child spawn)"
+            }
+        }
+    };
+    writeln!(output, "renderer: {reason}")?;
     writeln!(
         output,
         "validation: transport only; host UI, authentication, graphics and animation are unvalidated"

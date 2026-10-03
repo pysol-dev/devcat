@@ -8,8 +8,8 @@ pub(crate) struct Cli {
     /// Run transparent PTY transport without a cat.
     #[arg(long)]
     pub(crate) no_cat: bool,
-    /// Select the terminal cell renderer (unconfirmed hosts remain hidden).
-    #[arg(long, value_enum, default_value = "cells")]
+    /// Select a renderer; graphics negotiation failures fall back to cells.
+    #[arg(long, value_enum, default_value = "auto")]
     pub(crate) renderer: Renderer,
     #[command(subcommand)]
     pub(crate) command: Command,
@@ -57,5 +57,7 @@ mod tests {
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub(crate) enum Renderer {
+    Auto,
     Cells,
+    Kitty,
 }

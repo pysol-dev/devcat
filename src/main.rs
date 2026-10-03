@@ -4,6 +4,7 @@ mod cli;
 mod compositor;
 mod doctor;
 mod input;
+mod kitty;
 mod profile;
 mod pty;
 mod screen;
@@ -18,10 +19,10 @@ fn run() -> Result<ExitCode> {
     let args = cli::Cli::parse();
     match args.command {
         cli::Command::Doctor { host } => {
-            doctor::report(&host)?;
+            doctor::report(&host, args.renderer, args.no_cat)?;
             Ok(ExitCode::SUCCESS)
         }
-        cli::Command::Launch(command) => pty::run(&command, !args.no_cat),
+        cli::Command::Launch(command) => pty::run(&command, !args.no_cat, args.renderer),
     }
 }
 

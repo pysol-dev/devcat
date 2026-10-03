@@ -19,6 +19,7 @@ pub struct Compositor {
     last_frame: Option<Instant>,
     awaiting_clear: bool,
     frames: Option<[Vec<String>; 3]>,
+    kitty: Option<crate::kitty::Kitty>,
 }
 impl Compositor {
     pub fn new(rows: u16, cols: u16) -> Self {
@@ -34,7 +35,17 @@ impl Compositor {
             last_frame: None,
             awaiting_clear: true,
             frames: load_frames(),
+            kitty: None,
         }
+    }
+    pub fn use_kitty(&mut self, kitty: crate::kitty::Kitty) {
+        self.kitty = Some(kitty);
+    }
+    pub fn hide_graphics(&mut self, out: &mut impl Write) -> io::Result<()> {
+        if let Some(kitty) = &mut self.kitty {
+            kitty.hide(out)?;
+        }
+        Ok(())
     }
     pub fn confirm_profile(&mut self, profile: Profile) {
         self.profile = profile;
@@ -137,6 +148,24 @@ impl Compositor {
         };
         let advance_frame = self.drawn_pose != Some(pose) || self.last_frame.is_none();
         self.erase(out)?;
+        if let Some(kitty) = &mut self.kitty {
+            let frame = crate::kitty::Placement {
+                anchor,
+                columns: 16,
+                pose,
+                cursor: self.parser.screen().cursor_position(),
+            };
+            if kitty.draw(frame, out).is_ok() {
+                self.drawn = Some(anchor);
+                self.drawn_pose = Some(pose);
+                if advance_frame {
+                    self.last_frame = Some(now);
+                }
+                return Ok(());
+            }
+            kitty.finish(out)?;
+            self.kitty = None;
+        }
         let index = match pose {
             Pose::Idle => 0,
             Pose::Left => 1,
@@ -163,10 +192,23 @@ impl Compositor {
         }
         self.restore_cursor(out)
     }
+    pub fn suspend(&mut self, out: &mut impl Write) -> io::Result<()> {
+        self.erase(out)
+    }
     pub fn finish(&mut self, out: &mut impl Write) -> io::Result<()> {
+        if let Some(kitty) = &mut self.kitty {
+            kitty.finish(out)?;
+            self.drawn = None;
+            return Ok(());
+        }
         self.erase(out)
     }
     fn erase(&mut self, out: &mut impl Write) -> io::Result<()> {
+        if let Some(kitty) = &mut self.kitty {
+            kitty.hide(out)?;
+            self.drawn = None;
+            return Ok(());
+        }
         if let Some(a) = self.drawn {
             out.write_all(b"\x1b[0m")?;
             for row in a.row..a.row + a.height {
@@ -229,6 +271,61 @@ fn load_frames() -> Option<[Vec<String>; 3]> {
 )]
 mod tests {
     use super::*;
+    #[test]
+    fn cells_continue_when_graphics_writer_fails_once() {
+        struct FailOnce {
+            failed: bool,
+            bytes: Vec<u8>,
+        }
+        impl Write for FailOnce {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if !self.failed {
+                    self.failed = true;
+                    return Err(io::Error::other("synthetic graphics failure"));
+                }
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        // Given a negotiated backend and a transient graphics writer failure.
+        let now = Instant::now();
+        let mut probe = crate::kitty::Probe::start(&mut Vec::new(), now).unwrap();
+        probe.feed(b"\x1b_Gi=31;OK\x1b\\", now, &mut Vec::new());
+        let mut allocation = crate::kitty::Allocation::start(
+            probe.finish(&mut Vec::new()).unwrap(),
+            std::num::NonZeroU32::MIN,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let kitty = allocation
+            .feed(b"\x1b_Gi=90210,I=1;OK\x1b\\", now, &mut Vec::new())
+            .unwrap();
+        let mut cat = Compositor::new(24, 80);
+        cat.confirm_profile(Profile::ConfirmedFixture);
+        cat.use_kitty(kitty);
+        cat.output(&fixture(), &mut Vec::new()).unwrap();
+        let mut out = FailOnce {
+            failed: false,
+            bytes: Vec::new(),
+        };
+        // When a frame write fails, then release the owned image and draw cells.
+        cat.tick(&mut out).unwrap();
+        assert!(cat.kitty.is_none());
+        assert!(cat.drawn.is_some());
+        assert!(String::from_utf8_lossy(&out.bytes).contains("a=d,d=I,i=90210"));
+        cat.input(b"a");
+        cat.output(b"\x1b[20;3Ha", &mut out).unwrap();
+        cat.finish(&mut out).unwrap();
+        let evidence = std::env::var_os("BONGO_EVIDENCE_DIR").map_or_else(
+            || std::path::PathBuf::from(".omo/evidence/kitty-launcher"),
+            std::path::PathBuf::from,
+        );
+        std::fs::create_dir_all(&evidence).unwrap();
+        std::fs::write(evidence.join("graphics-writer-fallback.bin"), out.bytes).unwrap();
+    }
     fn fixture() -> Vec<u8> {
         format!(
             "\x1b[2J\x1b[1;1Hfixture\x1b[18;1H─ host │ model │ context\x1b[23;1H{}\x1b[20;3H",

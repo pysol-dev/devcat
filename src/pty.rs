@@ -21,7 +21,11 @@ use crate::{compositor::Compositor, profile::Profile};
     clippy::too_many_lines,
     reason = "Keep PTY ownership and unconditional compositor cleanup in one lexical scope"
 )]
-pub(crate) fn run(args: &[OsString], cat_enabled: bool) -> Result<ExitCode> {
+pub(crate) fn run(
+    args: &[OsString],
+    cat_enabled: bool,
+    renderer: crate::cli::Renderer,
+) -> Result<ExitCode> {
     let command = command(args)?;
     let terminal = Terminal::enter()?;
     let mut signals = Signals::new([SIGWINCH, SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGTSTP, SIGCONT])?;
@@ -37,25 +41,46 @@ pub(crate) fn run(args: &[OsString], cat_enabled: bool) -> Result<ExitCode> {
             cat.confirm_profile(Profile::HermesTui);
         }
     }
+    let stdin = std::io::stdin();
+    let mut input = stdin.lock();
+    let mut output = std::io::stdout().lock();
+    let mut buffered_input = Vec::new();
     let pair = native_pty_system().openpty(size)?;
-    let mut child = pair
-        .slave
-        .spawn_command(command)
-        .context("spawn stock executable")?;
+    let mut writer = Some(pair.master.take_writer()?);
+    let mut reader = pair.master.try_clone_reader()?;
+    if let Some(cat) = &mut compositor {
+        let selection = negotiate(renderer, &mut input, &mut output, &mut buffered_input);
+        if let Some(kitty) = selection {
+            cat.use_kitty(kitty);
+        }
+    }
+    let mut child = match pair.slave.spawn_command(command) {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some(cat) = &mut compositor {
+                cat.finish(&mut output)?;
+                output.flush()?;
+            }
+            return Err(error).context("spawn stock executable");
+        }
+    };
     drop(pair.slave);
     let pid = Pid::from_raw(i32::try_from(
         child.process_id().context("child PID unavailable")?,
     )?);
-    let mut writer = Some(pair.master.take_writer()?);
-    let mut reader = pair.master.try_clone_reader()?;
     let (send, receive) = mpsc::sync_channel(16);
     let output_thread = std::thread::spawn(move || read_output(reader.as_mut(), &send));
-    let stdin = std::io::stdin();
-    let mut input = stdin.lock();
-    let mut output = std::io::stdout().lock();
     let mut buffer = [0; 8192];
     let mut composed_output = Vec::with_capacity(16384);
     let transport_result: Result<()> = (|| {
+        if let Some(destination) = writer.as_mut() {
+            destination.write_all(&buffered_input)?;
+            destination.flush()?;
+            if let Some(cat) = &mut compositor {
+                cat.input(&buffered_input);
+            }
+        }
+        buffered_input.clear();
         loop {
             for signal in signals.pending() {
                 match signal {
@@ -63,13 +88,14 @@ pub(crate) fn run(args: &[OsString], cat_enabled: bool) -> Result<ExitCode> {
                         let size = terminal::size()?;
                         // SIGWINCH arrives after terminal reflow: discard old coordinates instead of erasing child cells.
                         if let Some(cat) = &mut compositor {
+                            cat.hide_graphics(&mut output)?;
                             cat.resize(size.rows, size.cols);
                         }
                         pair.master.resize(size)?;
                     }
                     SIGTSTP => {
                         if let Some(cat) = &mut compositor {
-                            cat.finish(&mut output)?;
+                            cat.suspend(&mut output)?;
                         }
                         output.flush()?;
                         terminal.restore()?;
@@ -78,6 +104,7 @@ pub(crate) fn run(args: &[OsString], cat_enabled: bool) -> Result<ExitCode> {
                         terminal.resume()?;
                         let size = terminal::size()?;
                         if let Some(cat) = &mut compositor {
+                            cat.hide_graphics(&mut output)?;
                             cat.resize(size.rows, size.cols);
                         }
                         pair.master.resize(size)?;
@@ -87,6 +114,7 @@ pub(crate) fn run(args: &[OsString], cat_enabled: bool) -> Result<ExitCode> {
                         terminal.resume()?;
                         let size = terminal::size()?;
                         if let Some(cat) = &mut compositor {
+                            cat.hide_graphics(&mut output)?;
                             cat.resize(size.rows, size.cols);
                         }
                         pair.master.resize(size)?;
@@ -139,17 +167,21 @@ pub(crate) fn run(args: &[OsString], cat_enabled: bool) -> Result<ExitCode> {
                 Err(RecvTimeoutError::Disconnected) => break,
             }
             if let Some(cat) = &mut compositor {
-                cat.tick(&mut output)?;
+                composed_output.clear();
+                cat.tick(&mut composed_output)?;
+                output.write_all(&composed_output)?;
                 output.flush()?;
             }
         }
         Ok(())
     })();
-    if let Some(cat) = &mut compositor {
-        cat.finish(&mut output)?;
-        output.flush()?;
-    }
+    let cleanup_result = match &mut compositor {
+        Some(cat) => cat.finish(&mut output).and_then(|()| output.flush()),
+        None => Ok(()),
+    };
+    drop(receive);
     transport_result?;
+    cleanup_result?;
     output_thread
         .join()
         .map_err(|_| anyhow::anyhow!("PTY output reader panicked"))?;
@@ -239,4 +271,74 @@ fn fixture_profile(args: &[OsString]) -> bool {
         (Ok(actual), Ok(expected)) => actual == expected,
         _ => false,
     }
+}
+
+/// Negotiate only before child launch. All unrelated bytes stay in arrival order.
+fn negotiate(
+    renderer: crate::cli::Renderer,
+    input: &mut std::io::StdinLock<'_>,
+    out: &mut impl Write,
+    passthrough: &mut Vec<u8>,
+) -> Option<crate::kitty::Kitty> {
+    use crate::kitty::{Allocation, Probe, ProbeStatus};
+    use nix::poll::{PollFd, PollFlags, poll};
+    use std::{io::Read, num::NonZeroU32, os::fd::AsFd, time::Instant};
+    match renderer {
+        crate::cli::Renderer::Cells => return None,
+        crate::cli::Renderer::Auto | crate::cli::Renderer::Kitty => {}
+    }
+    if ["TMUX", "STY", "ZELLIJ"]
+        .iter()
+        .any(|key| std::env::var_os(key).is_some())
+    {
+        return None;
+    }
+    let Ok(mut probe) = Probe::start(out, Instant::now()) else {
+        return None;
+    };
+    let mut bytes = [0; 8192];
+    while matches!(probe.status(), ProbeStatus::Pending) && passthrough.len() < 65536 {
+        probe.expire(Instant::now(), passthrough);
+        if !matches!(probe.status(), ProbeStatus::Pending) {
+            break;
+        }
+        let mut fds = [PollFd::new(input.as_fd(), PollFlags::POLLIN)];
+        match poll(&mut fds, 10_u16) {
+            Ok(0) | Err(nix::errno::Errno::EINTR) => {}
+            Ok(_) => match input.read(&mut bytes) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => probe.feed(&bytes[..n], Instant::now(), passthrough),
+            },
+            Err(_) => break,
+        }
+    }
+    let capability = probe.finish(passthrough)?;
+    let number = NonZeroU32::new(std::process::id()).unwrap_or(NonZeroU32::MIN);
+    let Ok(mut allocation) = Allocation::start(capability, number, out) else {
+        return None;
+    };
+    let mut kitty = None;
+    while !allocation.expired(Instant::now()) && passthrough.len() < 65536 {
+        let mut fds = [PollFd::new(input.as_fd(), PollFlags::POLLIN)];
+        match poll(&mut fds, 10_u16) {
+            Ok(0) | Err(nix::errno::Errno::EINTR) => {}
+            Ok(_) => match input.read(&mut bytes) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    kitty = allocation.feed(&bytes[..n], Instant::now(), passthrough);
+                    if kitty.is_some() {
+                        break;
+                    }
+                }
+            },
+            Err(_) => break,
+        }
+    }
+    if let Err(error) = allocation
+        .cancel(out, passthrough)
+        .and_then(|()| out.flush())
+    {
+        eprintln!("bongo: graphics negotiation cleanup failed: {error}");
+    }
+    kitty
 }
