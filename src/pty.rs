@@ -30,6 +30,11 @@ pub(crate) fn run(args: &[OsString], cat_enabled: bool) -> Result<ExitCode> {
     if let Some(cat) = &mut compositor {
         if fixture_profile(args) {
             cat.confirm_profile(Profile::ConfirmedFixture);
+        } else if args.first().is_some_and(|p| {
+            std::path::Path::new(p).file_name() == Some(std::ffi::OsStr::new("hermes"))
+        }) && args.iter().skip(1).any(|arg| arg == "--tui")
+        {
+            cat.confirm_profile(Profile::HermesTui);
         }
     }
     let pair = native_pty_system().openpty(size)?;
@@ -49,6 +54,7 @@ pub(crate) fn run(args: &[OsString], cat_enabled: bool) -> Result<ExitCode> {
     let mut input = stdin.lock();
     let mut output = std::io::stdout().lock();
     let mut buffer = [0; 8192];
+    let mut composed_output = Vec::with_capacity(16384);
     let transport_result: Result<()> = (|| {
         loop {
             for signal in signals.pending() {
@@ -117,7 +123,12 @@ pub(crate) fn run(args: &[OsString], cat_enabled: bool) -> Result<ExitCode> {
             match receive.recv_timeout(Duration::from_millis(2)) {
                 Ok(Ok(bytes)) => {
                     match &mut compositor {
-                        Some(cat) => cat.output(&bytes, &mut output)?,
+                        Some(cat) => {
+                            composed_output.clear();
+                            cat.output(&bytes, &mut composed_output)?;
+                            cat.tick(&mut composed_output)?;
+                            output.write_all(&composed_output)?;
+                        }
                         None => output.write_all(&bytes)?,
                     }
                     output.flush()?;

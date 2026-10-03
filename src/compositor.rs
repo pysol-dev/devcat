@@ -12,6 +12,7 @@ pub struct Compositor {
     guard: ProtocolGuard,
     input: InputClassifier,
     animation: Animation,
+    pending_hit: Option<Instant>,
     profile: Profile,
     drawn: Option<Anchor>,
     drawn_pose: Option<Pose>,
@@ -26,6 +27,7 @@ impl Compositor {
             guard: ProtocolGuard::default(),
             input: InputClassifier::default(),
             animation: Animation::new(),
+            pending_hit: None,
             profile: Profile::Unconfirmed,
             drawn: None,
             drawn_pose: None,
@@ -38,12 +40,22 @@ impl Compositor {
         self.profile = profile;
     }
     pub fn input(&mut self, bytes: &[u8]) {
-        if !self.composing() {
-            self.input = InputClassifier::default();
-            return;
-        }
         let now = Instant::now();
-        self.input.observe(bytes, || self.animation.strike(now));
+        if self.composing() {
+            self.pending_hit = None;
+            self.input.observe(bytes, || self.animation.strike(now));
+        } else if self.profile == Profile::HermesTui
+            && !self.awaiting_clear
+            && self.guard.ready()
+            && profile::hermes_empty_composer(self.parser.screen(), self.frame_rows())
+        {
+            // Hermes hides its cursor for an empty draft. Keep only a bounded
+            // hit category until its echo confirms a safe composing layout.
+            self.input.observe(bytes, || self.pending_hit = Some(now));
+        } else {
+            self.pending_hit = None;
+            self.input = InputClassifier::default();
+        }
     }
     fn frame_rows(&self) -> u16 {
         self.frames
@@ -74,8 +86,21 @@ impl Compositor {
         self.drawn_pose = None;
         self.last_frame = None;
         self.awaiting_clear = true;
+        self.pending_hit = None;
         self.input = InputClassifier::default();
+        let alternate_screen = self.parser.screen().alternate_screen();
+        let hide_cursor = self.parser.screen().hide_cursor();
+        let attributes = self.parser.screen().attributes_formatted();
         self.parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
+        // Resize changes cells, not terminal modes. Seed only modeled state;
+        // these bytes never reach the physical terminal or satisfy awaiting_clear.
+        if alternate_screen {
+            self.parser.process(b"\x1b[?1049h");
+        }
+        if hide_cursor {
+            self.parser.process(b"\x1b[?25l");
+        }
+        self.parser.process(&attributes);
     }
     pub fn tick(&mut self, out: &mut impl Write) -> io::Result<()> {
         self.tick_at(out, Instant::now())
@@ -88,16 +113,29 @@ impl Compositor {
         else {
             return Ok(());
         };
-        let pose = self.animation.pose(now);
-        if self.drawn == Some(anchor) && self.drawn_pose == Some(pose) {
-            return Ok(());
-        }
-        if self
-            .last_frame
-            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(34))
+        if let Some(hit) = self.pending_hit.take()
+            && now.duration_since(hit) < Duration::from_millis(110)
         {
+            self.animation.strike(hit);
+        }
+        let requested_pose = self.animation.pose(now);
+        if self.drawn == Some(anchor) && self.drawn_pose == Some(requested_pose) {
             return Ok(());
         }
+        let throttled = self
+            .last_frame
+            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(34));
+        if throttled && self.drawn.is_some() {
+            return Ok(());
+        }
+        // Restoring cells erased for child output is not an animation advance.
+        // Keep the previous pose during its frame budget instead of leaving a hole.
+        let pose = if throttled {
+            self.drawn_pose.unwrap_or(requested_pose)
+        } else {
+            requested_pose
+        };
+        let advance_frame = self.drawn_pose != Some(pose) || self.last_frame.is_none();
         self.erase(out)?;
         let index = match pose {
             Pose::Idle => 0,
@@ -111,7 +149,9 @@ impl Compositor {
         // Record ownership before writing so a partial writer failure still permits cleanup.
         self.drawn = Some(anchor);
         self.drawn_pose = Some(pose);
-        self.last_frame = Some(now);
+        if advance_frame {
+            self.last_frame = Some(now);
+        }
         for (offset, line) in (0_u16..).zip(&frames[index]) {
             write!(
                 out,
@@ -336,3 +376,7 @@ mod resize_tests {
         assert!(c.drawn.is_some());
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/hosts/hermes/compositor.rs"]
+mod hermes_tests;

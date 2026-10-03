@@ -6,15 +6,20 @@ pub struct ProtocolGuard {
     pub blocked: bool,
     pub clear_generation: u64,
     continuation: u8,
+    synchronized: bool,
 }
 impl ProtocolGuard {
     pub fn ready(&self) -> bool {
-        !self.blocked && self.state == 0 && self.continuation == 0
+        !self.blocked && !self.synchronized && self.state == 0 && self.continuation == 0
     }
     pub fn observe(&mut self, bytes: &[u8]) {
         for &b in bytes {
             match self.state {
                 1 => match b {
+                    b']' => {
+                        self.state = 3;
+                        self.sequence.clear();
+                    }
                     b'[' => {
                         self.state = 2;
                         self.sequence.clear();
@@ -32,27 +37,13 @@ impl ProtocolGuard {
                         self.sequence.push(b);
                     }
                     if (0x40..=0x7e).contains(&b) {
-                        let allowed = match b {
-                            b'A' | b'B' | b'C' | b'D' | b'E' | b'F' | b'G' | b'H' | b'f' | b'd'
-                            | b'J' | b'K' | b'X' | b'P' | b'@' | b'L' | b'M' | b'S' | b'T'
-                            | b'r' => self
-                                .sequence
-                                .iter()
-                                .all(|v| v.is_ascii_digit() || *v == b';' || *v == b),
-                            b'm' => supported_sgr(&self.sequence),
-                            b'h' | b'l' => [
-                                b"?25h".as_slice(),
-                                b"?25l",
-                                b"?1049h",
-                                b"?1049l",
-                                b"?2004h",
-                                b"?2004l",
-                                b"?1h",
-                                b"?1l",
-                            ]
-                            .contains(&self.sequence.as_slice()),
-                            _ => false,
-                        };
+                        let allowed = supported_csi(&self.sequence, b);
+                        if self.sequence == b"?2026h" {
+                            self.synchronized = true;
+                        }
+                        if self.sequence == b"?2026l" {
+                            self.synchronized = false;
+                        }
                         if self.sequence == b"2J" {
                             self.clear_generation = self.clear_generation.wrapping_add(1);
                         }
@@ -60,6 +51,21 @@ impl ProtocolGuard {
                             self.blocked = true;
                         }
                         self.state = 0;
+                    }
+                }
+                3 | 4 => {
+                    if b == 7 || (self.state == 4 && b == b'\\') {
+                        if !supported_osc(&self.sequence) {
+                            self.blocked = true;
+                        }
+                        self.sequence.clear();
+                        self.state = 0;
+                    } else if b == 0x1b && self.state == 3 {
+                        self.state = 4;
+                    } else if self.state == 4 || self.sequence.len() >= 1024 {
+                        self.blocked = true;
+                    } else {
+                        self.sequence.push(b);
                     }
                 }
                 _ => {
@@ -137,5 +143,63 @@ mod tests {
         assert!(!g.ready());
         g.observe(b"0m");
         assert!(g.ready());
+    }
+}
+
+fn supported_osc(sequence: &[u8]) -> bool {
+    sequence.starts_with(b"0;")
+        || sequence.starts_with(b"1;")
+        || sequence.starts_with(b"2;")
+        || sequence == b"10;?"
+        || sequence == b"11;?"
+}
+
+#[cfg(test)]
+#[path = "../tests/hosts/hermes/protocol.rs"]
+mod hermes_tests;
+
+fn supported_csi(sequence: &[u8], final_byte: u8) -> bool {
+    match final_byte {
+        b'A' | b'B' | b'C' | b'D' | b'E' | b'F' | b'G' | b'H' | b'f' | b'd' | b'J' | b'K'
+        | b'X' | b'P' | b'@' | b'L' | b'M' | b'S' | b'T' | b'r' => sequence
+            .iter()
+            .all(|v| v.is_ascii_digit() || *v == b';' || *v == final_byte),
+        b'm' => supported_sgr(sequence) || sequence == b">4m",
+        b'h' | b'l' => [
+            b"?25h".as_slice(),
+            b"?9l",
+            b"?1001l",
+            b"?1005l",
+            b"?1015l",
+            b"?1016l",
+            b"?25l",
+            b"?1049h",
+            b"?1049l",
+            b"?2004h",
+            b"?2004l",
+            b"?1h",
+            b"?1l",
+            b"?1000h",
+            b"?1000l",
+            b"?1002h",
+            b"?1002l",
+            b"?1003h",
+            b"?1003l",
+            b"?1004h",
+            b"?1004l",
+            b"?1006h",
+            b"?1006l",
+            b"?2029l",
+            b"?2026h",
+            b"?2026l",
+        ]
+        .contains(&sequence),
+        b'z' => sequence == b"0'z",
+        b'{' => sequence == b"0'{",
+        b'p' => sequence == b"?1000$p",
+        b'c' => sequence == b"c",
+        b'q' => sequence == b">0q",
+        b'u' => sequence == b"<u",
+        _ => false,
     }
 }
