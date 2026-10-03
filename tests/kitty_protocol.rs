@@ -42,6 +42,7 @@ fn frame(pose: Pose) -> Placement {
             row: 8,
             col: 20,
             height: 5,
+            bar_row: None,
         },
         columns: 16,
         pose,

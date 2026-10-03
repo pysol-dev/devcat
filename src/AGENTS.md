@@ -13,6 +13,7 @@ This directory owns the `bongo` executable's terminal behavior. Read the root `A
 | `pty.rs` | Child PTY, exact byte forwarding, signals/resize, sole parent-output loop | Persistent input text or a second stdout writer |
 | `input.rs` | Incremental key category classifier | Retained character payloads |
 | `animation.rs` | Bounded alternating paw state and idle deadline | A backlog of hits |
+| `kitty.rs` | Bounded graphics negotiation and Bongo-owned image cleanup | Claims of untested native rendering |
 | `screen.rs` | Protocol safety guard | Silent acceptance of unsupported terminal modes |
 | `profile.rs` | Confidence-based safe rectangle for a known host layout | Prompt-body parsing or arbitrary offsets that cover controls |
 | `compositor.rs` | Restore prior cat bounds, forward child output, draw frame, restore cursor/style | Direct terminal ownership outside `pty.rs` |
@@ -20,6 +21,8 @@ This directory owns the `bongo` executable's terminal behavior. Read the root `A
 ## Runtime flow
 
 `pty::run` relays incoming bytes to the stock child before calling the observation classifier. The output loop is the only physical writer. Feed every child output chunk to the screen model in original order; protocol uncertainty disables overlay before it can corrupt the session. The compositor's initial profile is unconfirmed and hidden. The controlled fixture may opt in only through an explicit test gate bound to the fixture executable path. A fixture confirmation is never a Hermes confirmation.
+
+The observed Codex CLI v0.158.0 profile requires its alternate-screen composer and footer at 120×40 or larger, plus empty default-style cells at the right edge. It owns a short divider under the cat and restores those footer cells before a modal or child redraw. Unknown layouts and narrow terminals hide the cat.
 
 Before a planned resize, remove any owned cell overlay at its old coordinates; then resize both PTY and screen model. After an unsolicited reflow, do not erase stale coordinates blindly. Wait for fresh complete chrome and an empty safe rectangle before drawing again. Modal or approval content can leave a status row visible while the composer is unavailable, so bar presence alone is insufficient.
 

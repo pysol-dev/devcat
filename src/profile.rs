@@ -3,12 +3,15 @@ pub struct Anchor {
     pub row: u16,
     pub col: u16,
     pub height: u16,
+    /// A blank footer row that Bongo may temporarily mark as a contact line.
+    pub bar_row: Option<u16>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Profile {
     Unconfirmed,
     ConfirmedFixture,
     HermesTui,
+    CodexTui,
 }
 
 pub fn anchor(screen: &vt100::Screen, profile: Profile, height: u16) -> Option<Anchor> {
@@ -16,6 +19,7 @@ pub fn anchor(screen: &vt100::Screen, profile: Profile, height: u16) -> Option<A
         Profile::Unconfirmed => return None,
         Profile::ConfirmedFixture => {}
         Profile::HermesTui => return hermes_anchor(screen, height),
+        Profile::CodexTui => return codex_anchor(screen, height),
     }
     let (rows, cols) = screen.size();
     let (cursor_row, cursor_col) = screen.cursor_position();
@@ -58,6 +62,7 @@ pub fn anchor(screen: &vt100::Screen, profile: Profile, height: u16) -> Option<A
         row: bar - height,
         col: cols - 18,
         height,
+        bar_row: None,
     };
     for r in a.row..bar {
         for c in a.col..a.col + 16 {
@@ -123,8 +128,70 @@ fn hermes_geometry(screen: &vt100::Screen, height: u16, empty_cursor: bool) -> O
         row: bar - height,
         col: cols - 18,
         height,
+        bar_row: None,
     };
     for row in anchor.row..bar {
+        for col in anchor.col..anchor.col + 16 {
+            let cell = screen.cell(row, col)?;
+            if !cell.contents().trim_matches(' ').is_empty()
+                || cell.is_wide_continuation()
+                || cell.fgcolor() != vt100::Color::Default
+                || cell.bgcolor() != vt100::Color::Default
+                || cell.bold()
+                || cell.dim()
+                || cell.italic()
+                || cell.inverse()
+                || cell.underline()
+            {
+                return None;
+            }
+        }
+    }
+    Some(anchor)
+}
+
+fn codex_anchor(screen: &vt100::Screen, height: u16) -> Option<Anchor> {
+    let (rows, cols) = screen.size();
+    let (cursor_row, cursor_col) = screen.cursor_position();
+    if height != 4
+        || rows < 40
+        || cols < 120
+        || !screen.alternate_screen()
+        || screen.hide_cursor()
+        || cursor_row != rows - 4
+        || cursor_col < 2
+    {
+        return None;
+    }
+    let anchor = Anchor {
+        row: rows - 2 - height,
+        col: cols - 18,
+        height,
+        bar_row: Some(rows - 2),
+    };
+    if cursor_col >= anchor.col
+        || screen.cell(cursor_row, 0)?.contents() != "›"
+        || !screen
+            .cell(cursor_row, 1)?
+            .contents()
+            .trim_matches(' ')
+            .is_empty()
+    {
+        return None;
+    }
+    let footer = screen.rows(0, cols).nth(usize::from(rows - 2))?;
+    if !footer.starts_with("  ")
+        || !footer
+            .chars()
+            .take(usize::from(anchor.col))
+            .collect::<String>()
+            .contains(" · ")
+    {
+        return None;
+    }
+    // The composer may share the cat's rows. Its right edge, the intervening
+    // spacer, and the footer under the paws must all be unoccupied default cells.
+    for row in anchor.row..=rows - 2 {
         for col in anchor.col..anchor.col + 16 {
             let cell = screen.cell(row, col)?;
             if !cell.contents().trim_matches(' ').is_empty()
@@ -147,3 +214,7 @@ fn hermes_geometry(screen: &vt100::Screen, height: u16, empty_cursor: bool) -> O
 #[cfg(test)]
 #[path = "../tests/hosts/hermes/profile.rs"]
 mod hermes_tests;
+
+#[cfg(test)]
+#[path = "../tests/hosts/codex/profile.rs"]
+mod codex_tests;

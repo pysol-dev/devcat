@@ -5,6 +5,7 @@ pub struct ProtocolGuard {
     sequence: Vec<u8>,
     pub blocked: bool,
     pub clear_generation: u64,
+    home_clear_candidate: bool,
     continuation: u8,
     synchronized: bool,
 }
@@ -24,8 +25,12 @@ impl ProtocolGuard {
                         self.state = 2;
                         self.sequence.clear();
                     }
-                    b'7' | b'8' | b'D' | b'E' | b'M' | b'=' | b'>' => self.state = 0,
+                    b'7' | b'8' | b'D' | b'E' | b'M' | b'=' | b'>' => {
+                        self.home_clear_candidate = false;
+                        self.state = 0;
+                    }
                     _ => {
+                        self.home_clear_candidate = false;
                         self.blocked = true;
                         self.state = 0;
                     }
@@ -38,6 +43,11 @@ impl ProtocolGuard {
                     }
                     if (0x40..=0x7e).contains(&b) {
                         let allowed = supported_csi(&self.sequence, b);
+                        let home = self.sequence == b"1;1H" || self.sequence == b"H";
+                        if self.sequence == b"J" && self.home_clear_candidate {
+                            self.clear_generation = self.clear_generation.wrapping_add(1);
+                        }
+                        self.home_clear_candidate = home;
                         if self.sequence == b"?2026h" {
                             self.synchronized = true;
                         }
@@ -47,6 +57,11 @@ impl ProtocolGuard {
                         if self.sequence == b"2J" {
                             self.clear_generation = self.clear_generation.wrapping_add(1);
                         }
+                        if self.sequence == b"?1049h" {
+                            // Entering a fresh alternate screen clears its cells;
+                            // the profile still requires complete safe chrome.
+                            self.clear_generation = self.clear_generation.wrapping_add(1);
+                        }
                         if !allowed {
                             self.blocked = true;
                         }
@@ -54,6 +69,7 @@ impl ProtocolGuard {
                     }
                 }
                 3 | 4 => {
+                    self.home_clear_candidate = false;
                     if b == 7 || (self.state == 4 && b == b'\\') {
                         if !supported_osc(&self.sequence) {
                             self.blocked = true;
@@ -73,8 +89,10 @@ impl ProtocolGuard {
                         self.state = 1;
                         self.continuation = 0;
                     } else if self.continuation > 0 && b & 0xc0 == 0x80 {
+                        self.home_clear_candidate = false;
                         self.continuation -= 1;
                     } else {
+                        self.home_clear_candidate = false;
                         self.continuation = match b {
                             0xc2..=0xdf => 1,
                             0xe0..=0xef => 2,
@@ -158,13 +176,17 @@ fn supported_osc(sequence: &[u8]) -> bool {
 #[path = "../tests/hosts/hermes/protocol.rs"]
 mod hermes_tests;
 
+#[cfg(test)]
+#[path = "../tests/hosts/codex/protocol.rs"]
+mod codex_tests;
+
 fn supported_csi(sequence: &[u8], final_byte: u8) -> bool {
     match final_byte {
         b'A' | b'B' | b'C' | b'D' | b'E' | b'F' | b'G' | b'H' | b'f' | b'd' | b'J' | b'K'
         | b'X' | b'P' | b'@' | b'L' | b'M' | b'S' | b'T' | b'r' => sequence
             .iter()
             .all(|v| v.is_ascii_digit() || *v == b';' || *v == final_byte),
-        b'm' => supported_sgr(sequence) || sequence == b">4m",
+        b'm' => supported_sgr(sequence) || [b">4m".as_slice(), b">4;0m"].contains(&sequence),
         b'h' | b'l' => [
             b"?25h".as_slice(),
             b"?9l",
@@ -189,6 +211,7 @@ fn supported_csi(sequence: &[u8], final_byte: u8) -> bool {
             b"?1004l",
             b"?1006h",
             b"?1006l",
+            b"?1007l",
             b"?2029l",
             b"?2026h",
             b"?2026l",
@@ -198,8 +221,9 @@ fn supported_csi(sequence: &[u8], final_byte: u8) -> bool {
         b'{' => sequence == b"0'{",
         b'p' => sequence == b"?1000$p",
         b'c' => sequence == b"c",
-        b'q' => sequence == b">0q",
-        b'u' => sequence == b"<u",
+        b'q' => [b">0q".as_slice(), b"0 q"].contains(&sequence),
+        b'u' => [b"<u".as_slice(), b"?u", b">7u"].contains(&sequence),
+        b'n' => sequence == b"6n",
         _ => false,
     }
 }

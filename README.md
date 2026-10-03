@@ -11,7 +11,7 @@ cargo +1.96.0 build --release
 
 The confirmed stock host is Hermes Agent v0.20.0 at 120×40 cells. `--renderer auto` (the default) asks the terminal whether it supports Kitty graphics and uses cell art if it does not answer; `--renderer kitty` makes the same bounded attempt. Neither option assumes support from `TERM`. `--no-cat` forwards the PTY without an overlay. Use `bongo doctor --host hermes` to inspect executable resolution and terminal dimensions; doctor does not perform graphics negotiation.
 
-The launcher hides the cat when it cannot prove an unobstructed composer bar. For this reason, a missing cat on an unvalidated host is expected. Claude Code and Codex CLI profiles, native Kitty rendering, and shared platform coverage remain gated by live tests. The current status and evidence requirements are in [PLAN.md](PLAN.md) and [release/animation-gates.json](release/animation-gates.json). Hyperpower effects are reserved until the animation gates pass.
+The launcher hides the cat when it cannot prove an unobstructed composer bar. For this reason, a missing cat on an unvalidated host is expected. Stock Codex CLI v0.158.0 has an observed 120×40 cell profile; its full release gate is still pending. Claude Code, native Kitty rendering, and shared platform coverage remain gated by live tests. The current status and evidence requirements are in [PLAN.md](PLAN.md) and [release/animation-gates.json](release/animation-gates.json). Hyperpower effects are reserved until the animation gates pass.
 
 ## Reproduce the controlled terminal test
 

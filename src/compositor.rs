@@ -161,6 +161,8 @@ impl Compositor {
                 if advance_frame {
                     self.last_frame = Some(now);
                 }
+                draw_owned_bar(anchor, out)?;
+                self.restore_cursor(out)?;
                 return Ok(());
             }
             kitty.finish(out)?;
@@ -190,6 +192,7 @@ impl Compositor {
                 line
             )?;
         }
+        draw_owned_bar(anchor, out)?;
         self.restore_cursor(out)
     }
     pub fn suspend(&mut self, out: &mut impl Write) -> io::Result<()> {
@@ -198,6 +201,10 @@ impl Compositor {
     pub fn finish(&mut self, out: &mut impl Write) -> io::Result<()> {
         if let Some(kitty) = &mut self.kitty {
             kitty.finish(out)?;
+            if let Some(a) = self.drawn {
+                erase_owned_bar(a, self.parser.screen(), out)?;
+                self.restore_cursor(out)?;
+            }
             self.drawn = None;
             return Ok(());
         }
@@ -206,6 +213,10 @@ impl Compositor {
     fn erase(&mut self, out: &mut impl Write) -> io::Result<()> {
         if let Some(kitty) = &mut self.kitty {
             kitty.hide(out)?;
+            if let Some(a) = self.drawn {
+                erase_owned_bar(a, self.parser.screen(), out)?;
+                self.restore_cursor(out)?;
+            }
             self.drawn = None;
             return Ok(());
         }
@@ -226,6 +237,7 @@ impl Compositor {
                     }
                 }
             }
+            erase_owned_bar(a, self.parser.screen(), out)?;
             self.restore_cursor(out)?;
             self.drawn = None;
         }
@@ -235,6 +247,38 @@ impl Compositor {
         out.write_all(&self.parser.screen().cursor_state_formatted())?;
         out.write_all(&self.parser.screen().attributes_formatted())
     }
+}
+
+fn draw_owned_bar(anchor: Anchor, out: &mut impl Write) -> io::Result<()> {
+    if let Some(row) = anchor.bar_row {
+        out.write_all(b"\x1b[0m")?;
+        write!(
+            out,
+            "\x1b[{};{}H{}",
+            row + 1,
+            anchor.col + 1,
+            "▔".repeat(16)
+        )?;
+    }
+    Ok(())
+}
+
+fn erase_owned_bar(anchor: Anchor, screen: &vt100::Screen, out: &mut impl Write) -> io::Result<()> {
+    if let Some(row) = anchor.bar_row {
+        out.write_all(b"\x1b[0m")?;
+        for col in anchor.col..anchor.col + 16 {
+            write!(out, "\x1b[{};{}H", row + 1, col + 1)?;
+            if screen
+                .cell(row, col)
+                .is_some_and(|cell| cell.contents() == " ")
+            {
+                out.write_all(b" ")?;
+            } else {
+                out.write_all(b"\x1b[X")?;
+            }
+        }
+    }
+    Ok(())
 }
 fn load_frames() -> Option<[Vec<String>; 3]> {
     let doc: serde_json::Value =
@@ -477,3 +521,7 @@ mod resize_tests {
 #[cfg(test)]
 #[path = "../tests/hosts/hermes/compositor.rs"]
 mod hermes_tests;
+
+#[cfg(test)]
+#[path = "../tests/hosts/codex/compositor.rs"]
+mod codex_tests;

@@ -24,7 +24,8 @@ fn anchor_requires_independent_composer_and_safe_rectangle() {
         Some(Anchor {
             row: 31,
             col: 102,
-            height: 7
+            height: 7,
+            bar_row: None,
         })
     );
 }

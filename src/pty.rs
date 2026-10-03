@@ -39,6 +39,10 @@ pub(crate) fn run(
         }) && args.iter().skip(1).any(|arg| arg == "--tui")
         {
             cat.confirm_profile(Profile::HermesTui);
+        } else if args.first().is_some_and(|p| {
+            std::path::Path::new(p).file_name() == Some(std::ffi::OsStr::new("codex"))
+        }) {
+            cat.confirm_profile(Profile::CodexTui);
         }
     }
     let stdin = std::io::stdin();
