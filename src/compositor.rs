@@ -233,7 +233,7 @@ impl Compositor {
         if let Some(kitty) = &mut self.kitty {
             kitty.finish(out)?;
             if let Some(a) = self.drawn {
-                erase_owned_bar(a, self.parser.screen(), out)?;
+                erase_owned_bar(a, out)?;
                 self.restore_cursor(out)?;
             }
             self.drawn = None;
@@ -245,7 +245,7 @@ impl Compositor {
         if let Some(kitty) = &mut self.kitty {
             kitty.hide(out)?;
             if let Some(a) = self.drawn {
-                erase_owned_bar(a, self.parser.screen(), out)?;
+                erase_owned_bar(a, out)?;
                 self.restore_cursor(out)?;
             }
             self.drawn = None;
@@ -254,21 +254,9 @@ impl Compositor {
         if let Some(a) = self.drawn {
             out.write_all(b"\x1b[0m")?;
             for row in a.row..a.row + a.height {
-                for col in a.col..a.col + 16 {
-                    write!(out, "\x1b[{};{}H", row + 1, col + 1)?;
-                    if self
-                        .parser
-                        .screen()
-                        .cell(row, col)
-                        .is_some_and(|cell| cell.contents() == " ")
-                    {
-                        out.write_all(b" ")?;
-                    } else {
-                        out.write_all(b"\x1b[X")?;
-                    }
-                }
+                write!(out, "\x1b[{};{}H\x1b[16X", row + 1, a.col + 1)?;
             }
-            erase_owned_bar(a, self.parser.screen(), out)?;
+            erase_owned_bar(a, out)?;
             self.restore_cursor(out)?;
             self.drawn = None;
         }
@@ -357,20 +345,10 @@ fn draw_owned_bar(anchor: Anchor, out: &mut impl Write) -> io::Result<()> {
     Ok(())
 }
 
-fn erase_owned_bar(anchor: Anchor, screen: &vt100::Screen, out: &mut impl Write) -> io::Result<()> {
+fn erase_owned_bar(anchor: Anchor, out: &mut impl Write) -> io::Result<()> {
     if let Some(row) = anchor.bar_row {
         out.write_all(b"\x1b[0m")?;
-        for col in anchor.col..anchor.col + 16 {
-            write!(out, "\x1b[{};{}H", row + 1, col + 1)?;
-            if screen
-                .cell(row, col)
-                .is_some_and(|cell| cell.contents() == " ")
-            {
-                out.write_all(b" ")?;
-            } else {
-                out.write_all(b"\x1b[X")?;
-            }
-        }
+        write!(out, "\x1b[{};{}H\x1b[16X", row + 1, anchor.col + 1)?;
     }
     Ok(())
 }
