@@ -15,12 +15,24 @@ use signal_hook::consts::signal::{SIGCONT, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIG
 use signal_hook::iterator::Signals;
 
 use crate::terminal::{self, Terminal};
+use crate::{compositor::Compositor, profile::Profile};
 
-pub(crate) fn run(args: &[OsString]) -> Result<ExitCode> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep PTY ownership and unconditional compositor cleanup in one lexical scope"
+)]
+pub(crate) fn run(args: &[OsString], cat_enabled: bool) -> Result<ExitCode> {
     let command = command(args)?;
     let terminal = Terminal::enter()?;
     let mut signals = Signals::new([SIGWINCH, SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGTSTP, SIGCONT])?;
-    let pair = native_pty_system().openpty(terminal::size()?)?;
+    let size = terminal::size()?;
+    let mut compositor = cat_enabled.then(|| Compositor::new(size.rows, size.cols));
+    if let Some(cat) = &mut compositor {
+        if fixture_profile(args) {
+            cat.confirm_profile(Profile::ConfirmedFixture);
+        }
+    }
+    let pair = native_pty_system().openpty(size)?;
     let mut child = pair
         .slave
         .spawn_command(command)
@@ -37,57 +49,96 @@ pub(crate) fn run(args: &[OsString]) -> Result<ExitCode> {
     let mut input = stdin.lock();
     let mut output = std::io::stdout().lock();
     let mut buffer = [0; 8192];
-    loop {
-        for signal in signals.pending() {
-            match signal {
-                SIGWINCH => pair.master.resize(terminal::size()?)?,
-                SIGTSTP => {
-                    terminal.restore()?;
-                    forward(pid, Signal::SIGTSTP)?;
-                    raise(Signal::SIGSTOP)?;
-                    terminal.resume()?;
-                    pair.master.resize(terminal::size()?)?;
-                    forward(pid, Signal::SIGCONT)?;
-                }
-                SIGCONT => {
-                    terminal.resume()?;
-                    pair.master.resize(terminal::size()?)?;
-                    forward(pid, Signal::SIGCONT)?;
-                }
-                other => forward(pid, Signal::try_from(other)?)?,
-            }
-        }
-        if let Some(destination) = writer.as_mut() {
-            let mut fds = [PollFd::new(stdin.as_fd(), PollFlags::POLLIN)];
-            match poll(&mut fds, PollTimeout::ZERO) {
-                Ok(count) if count > 0 => {
-                    let count = match input.read(&mut buffer) {
-                        Ok(count) => count,
-                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(error) => return Err(error.into()),
-                    };
-                    if count == 0 {
-                        writer.take();
-                    } else {
-                        destination.write_all(&buffer[..count])?;
-                        destination.flush()?;
+    let transport_result: Result<()> = (|| {
+        loop {
+            for signal in signals.pending() {
+                match signal {
+                    SIGWINCH => {
+                        let size = terminal::size()?;
+                        // SIGWINCH arrives after terminal reflow: discard old coordinates instead of erasing child cells.
+                        if let Some(cat) = &mut compositor {
+                            cat.resize(size.rows, size.cols);
+                        }
+                        pair.master.resize(size)?;
                     }
+                    SIGTSTP => {
+                        if let Some(cat) = &mut compositor {
+                            cat.finish(&mut output)?;
+                        }
+                        output.flush()?;
+                        terminal.restore()?;
+                        forward(pid, Signal::SIGTSTP)?;
+                        raise(Signal::SIGSTOP)?;
+                        terminal.resume()?;
+                        let size = terminal::size()?;
+                        if let Some(cat) = &mut compositor {
+                            cat.resize(size.rows, size.cols);
+                        }
+                        pair.master.resize(size)?;
+                        forward(pid, Signal::SIGCONT)?;
+                    }
+                    SIGCONT => {
+                        terminal.resume()?;
+                        let size = terminal::size()?;
+                        if let Some(cat) = &mut compositor {
+                            cat.resize(size.rows, size.cols);
+                        }
+                        pair.master.resize(size)?;
+                        forward(pid, Signal::SIGCONT)?;
+                    }
+                    other => forward(pid, Signal::try_from(other)?)?,
                 }
-                Ok(_) | Err(nix::errno::Errno::EINTR) => {}
-                Err(error) => return Err(error.into()),
             }
-        }
-        match receive.recv_timeout(Duration::from_millis(2)) {
-            Ok(Ok(bytes)) => {
-                output.write_all(&bytes)?;
+            if let Some(destination) = writer.as_mut() {
+                let mut fds = [PollFd::new(stdin.as_fd(), PollFlags::POLLIN)];
+                match poll(&mut fds, PollTimeout::ZERO) {
+                    Ok(count) if count > 0 => {
+                        let count = match input.read(&mut buffer) {
+                            Ok(count) => count,
+                            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                                continue;
+                            }
+                            Err(error) => return Err(error.into()),
+                        };
+                        if count == 0 {
+                            writer.take();
+                        } else {
+                            destination.write_all(&buffer[..count])?;
+                            destination.flush()?;
+                            if let Some(cat) = &mut compositor {
+                                cat.input(&buffer[..count]);
+                            }
+                        }
+                    }
+                    Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            match receive.recv_timeout(Duration::from_millis(2)) {
+                Ok(Ok(bytes)) => {
+                    match &mut compositor {
+                        Some(cat) => cat.output(&bytes, &mut output)?,
+                        None => output.write_all(&bytes)?,
+                    }
+                    output.flush()?;
+                }
+                Ok(Err(error)) if error.raw_os_error() == Some(nix::libc::EIO) => break,
+                Ok(Err(error)) => return Err(error.into()),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+            if let Some(cat) = &mut compositor {
+                cat.tick(&mut output)?;
                 output.flush()?;
             }
-            Ok(Err(error)) if error.raw_os_error() == Some(nix::libc::EIO) => break,
-            Ok(Err(error)) => return Err(error.into()),
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
         }
+        Ok(())
+    })();
+    if let Some(cat) = &mut compositor {
+        cat.finish(&mut output)?;
+        output.flush()?;
     }
+    transport_result?;
     output_thread
         .join()
         .map_err(|_| anyhow::anyhow!("PTY output reader panicked"))?;
@@ -158,5 +209,23 @@ fn forward(pid: Pid, signal: Signal) -> Result<()> {
     match killpg(pid, signal) {
         Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
         Err(error) => Err(error.into()),
+    }
+}
+
+fn fixture_profile(args: &[OsString]) -> bool {
+    if std::env::var_os("BONGO_TEST_PROFILE").as_deref() != Some(std::ffi::OsStr::new("fixture")) {
+        return false;
+    }
+    let Some(program) = args.first() else {
+        return false;
+    };
+    let expected = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target/debug/examples/composer-fixture");
+    match (
+        std::fs::canonicalize(program),
+        std::fs::canonicalize(expected),
+    ) {
+        (Ok(actual), Ok(expected)) => actual == expected,
+        _ => false,
     }
 }

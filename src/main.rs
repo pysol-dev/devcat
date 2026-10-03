@@ -1,7 +1,12 @@
 //! Same-window launcher for unmodified terminal applications.
+mod animation;
 mod cli;
+mod compositor;
 mod doctor;
+mod input;
+mod profile;
 mod pty;
+mod screen;
 mod terminal;
 
 use std::process::ExitCode;
@@ -16,7 +21,7 @@ fn run() -> Result<ExitCode> {
             doctor::report(&host)?;
             Ok(ExitCode::SUCCESS)
         }
-        cli::Command::Launch(command) => pty::run(&command),
+        cli::Command::Launch(command) => pty::run(&command, !args.no_cat),
     }
 }
 

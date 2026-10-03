@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(version, about, arg_required_else_help = true)]
@@ -8,6 +8,9 @@ pub(crate) struct Cli {
     /// Run transparent PTY transport without a cat.
     #[arg(long)]
     pub(crate) no_cat: bool,
+    /// Select the terminal cell renderer (unconfirmed hosts remain hidden).
+    #[arg(long, value_enum, default_value = "cells")]
+    pub(crate) renderer: Renderer,
     #[command(subcommand)]
     pub(crate) command: Command,
 }
@@ -50,4 +53,9 @@ mod tests {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum Renderer {
+    Cells,
 }
