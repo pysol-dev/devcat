@@ -29,12 +29,13 @@ const { values } = parseArgs({ options: {
 if (values.help) {
   console.log(`Usage: node script/qa/web-terminal-visual-qa.mjs --command '<shell command>' | --from-file capture.ansi
   --title TEXT --evidence-dir DIR --cols 80 --rows 24 --font-size 16 --scale 2
-  --input TEXT --input '{Enter}' --input '{Backspace}' --input '{ArrowDown}'
+  --input TEXT --input '{Enter}' --input '{Backspace}' --input '{Resize:80x24}'
   --wait-for TEXT --timeout-ms 15000 --settle-ms 500 --input-delay-ms 200
   --record-video (opt-in live WebM; requires Playwright ffmpeg and ffprobe)
   --browser /path/to/chrome (otherwise installed Google Chrome)
 Captures the active screen before terminating the PTY. --wait-for matches raw output.
 Keys: Enter, Backspace, Tab, Escape, arrows, Home, End, Delete, Ctrl+A..Z.
+Resize: {Resize:COLSxROWS}, integers 2..500 columns and 2..200 rows.
 Plain --input is written literally. Use shell quoting for escape sequences/paste.
 POSIX only. Run pnpm --dir script/qa install before use. Development tooling only.`);
   process.exit(0);
@@ -63,6 +64,14 @@ const keys = { Enter: '\r', Backspace: '\x7f', Tab: '\t', Escape: '\x1b',
   Home: '\x1b[H', End: '\x1b[F', Delete: '\x1b[3~' };
 const inputs = values.input.map(input => {
   const match = /^\{(.+)\}$/.exec(input);
+  if (input.startsWith('{Resize:')) {
+    const resize = /^\{Resize:([1-9]\d{0,2})x([1-9]\d{0,2})\}$/.exec(input);
+    if (!resize || Number(resize[1]) < 2 || Number(resize[1]) > 500 ||
+        Number(resize[2]) < 2 || Number(resize[2]) > 200) {
+      throw new RangeError('Resize must be {Resize:COLSxROWS}: columns 2..500, rows 2..200');
+    }
+    return { cols: Number(resize[1]), rows: Number(resize[2]) };
+  }
   if (!match) return input;
   const key = match[1];
   if (Object.hasOwn(keys, key)) return keys[key];
@@ -76,7 +85,7 @@ const metadata = {
   cwd: process.cwd(), invocation: process.argv, cols, rows, fontSize, scale,
   startedAt: new Date().toISOString(), versions: { node: process.version },
   video: { requested: values['record-video'], source: values['record-video'] ? 'live-pty-browser' : null },
-  capture: null, cleanup: {}, error: null,
+  resizeEvents: [], capture: null, cleanup: {}, error: null,
 };
 const raw = [];
 let browserServer, browser, context, video, terminal, server, port;
@@ -142,7 +151,10 @@ try {
   };
   context = await browser.newContext({ viewport: { width: 1200, height: 800 }, deviceScaleFactor: scale });
   let page = await openTerminal(context);
+  const maxGeometry = inputs.filter(input => typeof input === 'object').reduce((max, size) =>
+    ({ cols: Math.max(max.cols, size.cols), rows: Math.max(max.rows, size.rows) }), { cols, rows });
   if (values['record-video']) {
+    await page.evaluate(size => window.term.resize(size.cols, size.rows), maxGeometry);
     const bounds = await page.locator('#terminal').boundingBox();
     const viewport = { width: Math.ceil(bounds.width / 2) * 2, height: Math.ceil(bounds.height / 2) * 2 };
     await context.close();
@@ -150,7 +162,14 @@ try {
       recordVideo: { dir: evidenceDir, size: viewport } });
     page = await openTerminal(context);
     video = page.video();
+    metadata.video.viewport = viewport;
   }
+  const geometry = () => page.evaluate(() => ({ cols: window.term.cols, rows: window.term.rows }));
+  const screenLines = () => page.evaluate(() => {
+    const buffer = window.term.buffer.active;
+    return Array.from({ length: window.term.rows }, (_, row) =>
+      buffer.getLine(buffer.viewportY + row)?.translateToString(true) ?? '');
+  });
   const write = bytes => page.evaluate(bytes => new Promise(resolve => {
     window.term.write(new Uint8Array(bytes), resolve);
   }), Array.from(bytes));
@@ -171,11 +190,33 @@ try {
         await delay(20);
       }
     } else await delay(settleMs);
-    for (const input of inputs) {
+    const sequenceStarted = performance.now();
+    metadata.sequenceStartedAt = new Date().toISOString();
+    for (const [inputIndex, input] of inputs.entries()) {
       assertRunning();
       if (exitObserved) throw new Error('PTY exited before all input was delivered');
-      terminal.write(input);
-      await delay(inputDelayMs);
+      if (typeof input === 'object') {
+        const event = { inputIndex, requestedAt: new Date().toISOString(),
+          requestedMs: performance.now() - sequenceStarted,
+          old: { pty: { cols: terminal.cols, rows: terminal.rows }, xterm: await geometry() }, new: input };
+        metadata.resizeEvents.push(event);
+        terminal.pause();
+        await writeQueue;
+        assertRunning();
+        await page.evaluate(size => window.term.resize(size.cols, size.rows), input);
+        terminal.resize(input.cols, input.rows);
+        event.applied = { pty: { cols: terminal.cols, rows: terminal.rows }, xterm: await geometry() };
+        event.appliedMs = performance.now() - sequenceStarted;
+        terminal.resume();
+        await delay(inputDelayMs);
+        await writeQueue;
+        assertRunning();
+        event.observedMs = performance.now() - sequenceStarted;
+        event.lines = await screenLines();
+      } else {
+        terminal.write(input);
+        await delay(inputDelayMs);
+      }
     }
   } else {
     const bytes = await readFile(values['from-file']); raw.push(bytes); await write(bytes);
@@ -190,7 +231,7 @@ try {
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const screen = await page.evaluate(() => {
     const buffer = window.term.buffer.active;
-    return { type: buffer.type, cursorX: buffer.cursorX, cursorY: buffer.cursorY,
+    return { cols: window.term.cols, rows: window.term.rows, type: buffer.type, cursorX: buffer.cursorX, cursorY: buffer.cursorY,
       lines: Array.from({ length: window.term.rows }, (_, row) => buffer.getLine(buffer.viewportY + row)?.translateToString(true) ?? ''),
       widths: Array.from({ length: window.term.rows }, (_, row) => {
         const line = buffer.getLine(buffer.viewportY + row);
