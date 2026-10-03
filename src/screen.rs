@@ -13,6 +13,9 @@ impl ProtocolGuard {
     pub fn ready(&self) -> bool {
         !self.blocked && !self.synchronized && self.state == 0 && self.continuation == 0
     }
+    pub fn pending_safe(&self) -> bool {
+        !self.blocked && self.state == 0 && self.continuation == 0
+    }
     pub fn observe(&mut self, bytes: &[u8]) {
         for &b in bytes {
             match self.state {

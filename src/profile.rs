@@ -150,14 +150,26 @@ fn hermes_geometry(screen: &vt100::Screen, height: u16, empty_cursor: bool) -> O
     Some(anchor)
 }
 
+pub fn codex_pending_composer(screen: &vt100::Screen, height: u16) -> bool {
+    codex_geometry(screen, height, true).is_some()
+}
+
 fn codex_anchor(screen: &vt100::Screen, height: u16) -> Option<Anchor> {
+    codex_geometry(screen, height, false)
+}
+
+fn codex_geometry(
+    screen: &vt100::Screen,
+    height: u16,
+    allow_hidden_cursor: bool,
+) -> Option<Anchor> {
     let (rows, cols) = screen.size();
     let (cursor_row, cursor_col) = screen.cursor_position();
     if height != 4
         || rows < 40
         || cols < 120
         || !screen.alternate_screen()
-        || screen.hide_cursor()
+        || (!allow_hidden_cursor && screen.hide_cursor())
         || cursor_row != rows - 4
         || cursor_col < 2
     {

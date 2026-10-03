@@ -13,6 +13,7 @@ pub struct Compositor {
     input: InputClassifier,
     animation: Animation,
     pending_hit: Option<Instant>,
+    pending_cursor: Option<(u16, u16)>,
     profile: Profile,
     drawn: Option<Anchor>,
     drawn_pose: Option<Pose>,
@@ -29,6 +30,7 @@ impl Compositor {
             input: InputClassifier::default(),
             animation: Animation::new(),
             pending_hit: None,
+            pending_cursor: None,
             profile: Profile::Unconfirmed,
             drawn: None,
             drawn_pose: None,
@@ -54,6 +56,7 @@ impl Compositor {
         let now = Instant::now();
         if self.composing() {
             self.pending_hit = None;
+            self.pending_cursor = None;
             self.input.observe(bytes, || self.animation.strike(now));
         } else if self.profile == Profile::HermesTui
             && !self.awaiting_clear
@@ -63,8 +66,22 @@ impl Compositor {
             // Hermes hides its cursor for an empty draft. Keep only a bounded
             // hit category until its echo confirms a safe composing layout.
             self.input.observe(bytes, || self.pending_hit = Some(now));
+        } else if self.profile == Profile::CodexTui
+            && !self.awaiting_clear
+            && self.guard.pending_safe()
+            && profile::codex_pending_composer(self.parser.screen(), self.frame_rows())
+        {
+            // A synchronized Codex redraw may briefly hide the cursor while
+            // the composer remains structurally intact. Require its next echo
+            // to move the cursor before committing this short-lived hit.
+            let cursor = self.parser.screen().cursor_position();
+            self.input.observe(bytes, || {
+                self.pending_hit = Some(now);
+                self.pending_cursor = Some(cursor);
+            });
         } else {
             self.pending_hit = None;
+            self.pending_cursor = None;
             self.input = InputClassifier::default();
         }
     }
@@ -89,6 +106,13 @@ impl Compositor {
             self.awaiting_clear = false;
         }
         self.parser.process(bytes);
+        if self.profile == Profile::CodexTui
+            && self.pending_hit.is_some()
+            && !profile::codex_pending_composer(self.parser.screen(), self.frame_rows())
+        {
+            self.pending_hit = None;
+            self.pending_cursor = None;
+        }
         Ok(())
     }
     /// Call finish before changing terminal geometry. The fresh model hides until the child redraws confirmed chrome.
@@ -98,6 +122,7 @@ impl Compositor {
         self.last_frame = None;
         self.awaiting_clear = true;
         self.pending_hit = None;
+        self.pending_cursor = None;
         self.input = InputClassifier::default();
         let alternate_screen = self.parser.screen().alternate_screen();
         let hide_cursor = self.parser.screen().hide_cursor();
@@ -124,8 +149,11 @@ impl Compositor {
         else {
             return Ok(());
         };
+        let pending_cursor = self.pending_cursor.take();
         if let Some(hit) = self.pending_hit.take()
             && now.duration_since(hit) < Duration::from_millis(110)
+            && (self.profile != Profile::CodexTui
+                || pending_cursor.is_some_and(|old| old != self.parser.screen().cursor_position()))
         {
             self.animation.strike(hit);
         }
